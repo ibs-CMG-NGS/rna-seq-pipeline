@@ -1,0 +1,30 @@
+# RNA-seq Pipeline Conda Environment
+# 환경 생성: conda env create -f environment.yaml
+# 환경 활성화: conda activate rna-seq-pipeline
+
+name: rna-seq-pipeline
+
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+
+dependencies:
+  # Quality Control
+  - fastqc=0.12.1
+  - multiqc=1.19
+  
+  # Trimming
+  - cutadapt=4.4
+  
+  # Alignment
+  - star=2.7.10b
+  
+  # Quantification
+  - subread=2.0.6  # featureCounts
+  
+  # BAM file processing
+  - samtools=1.18
+  
+  # Workflow management
+  - snakemake-minimal=7.32

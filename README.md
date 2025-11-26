@@ -1,0 +1,184 @@
+# RNA-seq Analysis Pipeline
+
+Paired-end RNA-seq 데이터 분석을 위한 Snakemake 기반 자동화 파이프라인입니다.
+
+## 📋 파이프라인 개요
+
+이 파이프라인은 다음 단계를 자동으로 수행합니다:
+
+1. **Quality Control (FastQC)** - 원본 데이터 품질 검사
+2. **Adapter Trimming (cutadapt)** - 어댑터 제거 및 품질 기반 트리밍
+3. **Quality Control (FastQC)** - 트리밍 후 품질 검사
+4. **Alignment (STAR)** - 레퍼런스 게놈에 리드 정렬
+5. **Quantification (featureCounts)** - 유전자 발현량 정량화
+6. **Summary Report (MultiQC)** - 전체 분석 품질 리포트 생성
+
+## 🔧 요구사항
+
+### 소프트웨어
+- Conda 또는 Mamba
+- Linux 환경 (WSL 포함)
+
+### 데이터
+- Paired-end FASTQ 파일 (`.fastq.gz` 형식)
+- STAR genome index
+- Gene annotation GTF 파일
+
+## 📁 디렉토리 구조
+
+```
+rna_seq_pipeline/
+├── Snakefile              # 파이프라인 워크플로우 정의
+├── config.yaml            # 설정 파일 (사용자 수정 필요)
+├── environment.yaml       # Conda 환경 정의
+├── data/
+│   └── raw/              # 원본 FASTQ 파일 위치
+│       ├── sample1_R1.fastq.gz
+│       ├── sample1_R2.fastq.gz
+│       ├── sample2_R1.fastq.gz
+│       └── sample2_R2.fastq.gz
+├── genome/
+│   ├── star_index/       # STAR genome index
+│   └── annotation.gtf    # Gene annotation 파일
+├── results/
+│   ├── qc/               # FastQC 및 MultiQC 결과
+│   ├── trimmed/          # 트리밍된 FASTQ 파일
+│   ├── aligned/          # STAR 정렬 결과 (BAM 파일)
+│   └── counts/           # featureCounts 결과
+└── logs/                 # 각 작업의 로그 파일
+```
+
+## 🚀 사용 방법
+
+### 1. Conda 환경 설정
+
+```bash
+# Conda 환경 생성
+conda env create -f environment.yaml
+
+# 환경 활성화
+conda activate rna-seq-pipeline
+```
+
+### 2. 데이터 준비
+
+```bash
+# FASTQ 파일을 data/raw/ 디렉토리에 복사
+# 파일명 규칙: {sample_name}_R1.fastq.gz, {sample_name}_R2.fastq.gz
+cp /path/to/your/fastq/*_R*.fastq.gz data/raw/
+```
+
+### 3. 설정 파일 수정
+
+`config.yaml` 파일을 열어 다음 항목을 수정하세요:
+
+```yaml
+# STAR genome index 경로
+star_index: "genome/star_index/"
+
+# Gene annotation GTF 파일 경로
+annotation_gtf: "genome/annotation.gtf"
+
+# 필요시 다른 파라미터도 조정 가능
+```
+
+### 4. 파이프라인 실행
+
+```bash
+# Dry-run (실제 실행하지 않고 작업 계획만 확인)
+snakemake --use-conda -n
+
+# 실제 실행 (8개 코어 사용)
+snakemake --use-conda --cores 8
+
+# 특정 결과물만 생성
+snakemake --use-conda --cores 8 results/qc/multiqc_report.html
+```
+
+### 5. 워크플로우 시각화 (선택사항)
+
+```bash
+# DAG (Directed Acyclic Graph) 생성
+snakemake --dag | dot -Tpdf > workflow.pdf
+
+# Rulegraph 생성
+snakemake --rulegraph | dot -Tpdf > rulegraph.pdf
+```
+
+## 📊 결과물
+
+### 주요 출력 파일
+
+- `results/qc/multiqc_report.html` - 전체 분석 품질 요약 리포트
+- `results/counts/counts_matrix.txt` - 유전자별 read count 매트릭스
+- `results/counts/counts_matrix.txt.summary` - featureCounts 통계
+
+### 샘플별 출력 파일
+
+- `results/qc/{sample}_{R1,R2}_*_fastqc.html` - FastQC 품질 리포트
+- `results/trimmed/{sample}_{R1,R2}.fastq.gz` - 트리밍된 FASTQ 파일
+- `results/aligned/{sample}/Aligned.sortedByCoord.out.bam` - 정렬된 BAM 파일
+- `results/aligned/{sample}/Log.final.out` - STAR 정렬 통계
+
+## ⚙️ 파라미터 설정
+
+`config.yaml`에서 다음 파라미터를 조정할 수 있습니다:
+
+### Quality Control & Trimming
+- `quality_cutoff`: 최소 base quality (기본값: 20)
+- `min_read_length`: 트리밍 후 최소 read 길이 (기본값: 20)
+- `adapter_r1`, `adapter_r2`: Illumina adapter 서열
+
+### Alignment
+- `star_threads`: STAR 정렬에 사용할 스레드 수 (기본값: 8)
+
+### Quantification
+- `featurecounts_threads`: featureCounts에 사용할 스레드 수 (기본값: 4)
+- `strandedness`: RNA-seq library의 strand 정보
+  - `0`: unstranded (기본값)
+  - `1`: stranded (forward)
+  - `2`: stranded (reverse)
+- `feature_type`: 정량화할 feature 타입 (기본값: "exon")
+- `attribute_type`: GTF attribute 타입 (기본값: "gene_id")
+
+## 🔍 문제 해결
+
+### FASTQ 파일이 인식되지 않는 경우
+- 파일명이 `{sample}_R1.fastq.gz`, `{sample}_R2.fastq.gz` 형식인지 확인
+- 파일이 `data/raw/` 디렉토리에 있는지 확인
+
+### STAR index 오류
+- `config.yaml`의 `star_index` 경로가 올바른지 확인
+- STAR index가 사용하는 STAR 버전과 호환되는지 확인
+
+### Annotation GTF 오류
+- GTF 파일 경로가 올바른지 확인
+- GTF 파일 형식이 유효한지 확인 (gene_id attribute 포함 여부)
+
+## 📝 주의사항
+
+1. **STAR genome index 생성**: 이 파이프라인은 STAR index가 이미 준비되어 있다고 가정합니다. Index 생성이 필요한 경우:
+   ```bash
+   STAR --runMode genomeGenerate \
+        --genomeDir genome/star_index/ \
+        --genomeFastaFiles genome/reference.fa \
+        --sjdbGTFfile genome/annotation.gtf \
+        --runThreadN 8
+   ```
+
+2. **메모리 요구사항**: STAR 정렬은 대용량 메모리가 필요합니다 (인간 게놈 기준 최소 32GB RAM 권장)
+
+3. **Strandedness 확인**: RNA-seq library preparation 방법에 따라 `strandedness` 파라미터를 올바르게 설정해야 합니다.
+
+## 📚 참고 문헌
+
+- FastQC: https://www.bioinformatics.babraham.ac.uk/projects/fastqc/
+- cutadapt: https://cutadapt.readthedocs.io/
+- STAR: https://github.com/alexdobin/STAR
+- featureCounts: http://subread.sourceforge.net/
+- MultiQC: https://multiqc.info/
+- Snakemake: https://snakemake.readthedocs.io/
+
+## 📧 문의
+
+문제가 발생하거나 질문이 있으시면 이슈를 등록해주세요.

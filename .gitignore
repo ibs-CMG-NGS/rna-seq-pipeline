@@ -1,0 +1,31 @@
+# Ignore log files
+logs/
+
+# Ignore results (comment out if you want to track results)
+results/
+
+# Ignore hidden Snakemake files
+.snakemake/
+
+# Ignore actual sample sheet (keep template only)
+samples.tsv
+
+# Ignore conda environments created in the project
+.conda/
+envs/
+
+# Ignore temporary files
+*.tmp
+*.temp
+*~
+
+# Ignore OS-specific files
+.DS_Store
+Thumbs.db
+
+# Ignore benchmark files
+benchmarks/
+
+# Ignore any downloaded reference files (if large)
+# genome/*.fa
+# genome/*.fa.fai

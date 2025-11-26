@@ -1,0 +1,27 @@
+# Sample Sheet Template for RNA-seq Pipeline
+# 샘플 정보를 관리하기 위한 템플릿 파일입니다.
+# 실제 분석 시 이 파일을 복사하여 samples.tsv로 저장하고 수정하세요.
+
+# 파일 형식: Tab-separated values (TSV)
+# 첫 번째 행은 헤더입니다.
+
+sample_id	condition	replicate	fastq_r1	fastq_r2	notes
+sample1	control	1	data/raw/sample1_R1.fastq.gz	data/raw/sample1_R2.fastq.gz	Control group replicate 1
+sample2	control	2	data/raw/sample2_R1.fastq.gz	data/raw/sample2_R2.fastq.gz	Control group replicate 2
+sample3	control	3	data/raw/sample3_R1.fastq.gz	data/raw/sample3_R2.fastq.gz	Control group replicate 3
+sample4	treated	1	data/raw/sample4_R1.fastq.gz	data/raw/sample4_R2.fastq.gz	Treatment group replicate 1
+sample5	treated	2	data/raw/sample5_R1.fastq.gz	data/raw/sample5_R2.fastq.gz	Treatment group replicate 2
+sample6	treated	3	data/raw/sample6_R1.fastq.gz	data/raw/sample6_R2.fastq.gz	Treatment group replicate 3
+
+# 컬럼 설명:
+# - sample_id: 고유한 샘플 식별자 (파일명과 일치해야 함)
+# - condition: 실험 조건 (예: control, treated, timepoint_0h, etc.)
+# - replicate: 생물학적 반복 번호
+# - fastq_r1: Read 1 FASTQ 파일 경로
+# - fastq_r2: Read 2 FASTQ 파일 경로
+# - notes: 추가 메모 (선택사항)
+
+# 사용 예시:
+# 1. 이 파일을 samples.tsv로 복사
+# 2. 실제 샘플 정보에 맞게 수정
+# 3. 하류 분석(differential expression 등)에 활용
