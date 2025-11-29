@@ -46,6 +46,9 @@ rna_seq_pipeline/
 │   ├── aligned/          # STAR 정렬 결과 (BAM 파일)
 │   └── counts/           # featureCounts 결과
 └── logs/                 # 각 작업의 로그 파일
+    ├── fastqc/           # FastQC 로그
+    ├── cutadapt/         # cutadapt 로그
+    └── star/             # STAR 정렬 로그
 ```
 
 ## 🚀 사용 방법

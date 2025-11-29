@@ -3,7 +3,7 @@
 
 # === Reference Files ===
 star_index: "genome/star_index/"  # STAR genome index directory
-annotation_gtf: "genome/annotation.gtf"  # Gene annotation GTF file
+annotation_gtf: "genome/genes.gtf"  # Gene annotation GTF file
 
 # === Adapter Sequences ===
 # Illumina TruSeq adapters (default)
@@ -23,3 +23,8 @@ featurecounts_threads: 4  # Number of threads for featureCounts
 feature_type: "exon"  # Feature type to count (exon, gene, etc.)
 attribute_type: "gene_id"  # GTF attribute to use as feature ID
 strandedness: 0  # 0=unstranded, 1=stranded (forward), 2=stranded (reverse)
+
+# === QC Report Parameters ===
+generate_qc_report: false  # Whether to generate HTML QC report
+qc_report_output: "results/qc_report.html"  # Output path for QC report
+qc_top_genes: 10  # Number of top expressed genes to show per sample

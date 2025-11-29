@@ -1,8 +1,19 @@
-# Ignore log files
-logs/
+# Ignore log files (but keep directory structure)
+logs/**/*.log
+logs/**/*.txt
+logs/**/*.err
+logs/**/*.out
 
 # Ignore results (comment out if you want to track results)
 results/
+
+# Ignore data files (but keep the data directory itself)
+data/*
+!data/.gitkeep
+
+# Ignore genome files (but keep the genome directory itself)
+genome/*
+!genome/.gitkeep
 
 # Ignore hidden Snakemake files
 .snakemake/
