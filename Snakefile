@@ -67,6 +67,8 @@ rule star_align:
     log:
         "logs/star/{sample}.log"
     threads: config["star_threads"]
+    resources:
+        mem_gb=35  # Memory limit per STAR job (35GB for 62GB total RAM)
     shell:
         """
         STAR --runThreadN {threads} \
@@ -75,7 +77,7 @@ rule star_align:
              --readFilesCommand zcat \
              --outFileNamePrefix results/aligned/{wildcards.sample}/ \
              --outSAMtype BAM SortedByCoordinate \
-             --limitBAMsortRAM 10000000000 \
+             --limitBAMsortRAM 30000000000 \
              --outBAMsortingThreadN {threads} > {log} 2>&1
         """
 

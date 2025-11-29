@@ -75,7 +75,92 @@ snakemake --cores 8
 snakemake --cores 8 results/counts/counts_matrix.txt
 ```
 
-### 5. QC 리포트만 재생성
+### 5. 성능 최적화 (서버 사양별 설정)
+
+#### 5.1 리소스 분석
+
+파이프라인의 각 단계는 서로 다른 컴퓨팅 리소스를 요구합니다:
+
+| 단계 | CPU 사용량 | 메모리 사용량 | 특징 |
+|------|-----------|---------------|------|
+| FastQC | 낮음 (1 thread) | ~500MB | I/O 집약적 |
+| cutadapt | 중간 (4 threads) | ~1-2GB | CPU 집약적 |
+| **STAR align** | **높음 (8-16 threads)** | **~30GB/샘플** | **메모리 집약적** |
+| featureCounts | 중간 (4-8 threads) | ~2-3GB | I/O 집약적 |
+
+#### 5.2 서버 사양별 추천 설정
+
+**예시: Intel Xeon E5-2630 v2 (12 cores/24 threads, 62GB RAM)**
+
+`config.yaml` 설정:
+```yaml
+star_threads: 12              # CPU 코어 수에 맞춤
+featurecounts_threads: 8      # 비교적 가벼운 작업이므로 여유있게
+```
+
+`Snakefile`의 STAR 규칙 (이미 적용됨):
+```python
+rule star_align:
+    resources:
+        mem_gb=35             # 샘플당 메모리 제한 (동시 실행 고려)
+    shell:
+        """
+        STAR --limitBAMsortRAM 30000000000  # 30GB (메모리 활용 최적화)
+        """
+```
+
+#### 5.3 실행 명령어 (리소스 제어)
+
+```bash
+# 추천: 안전한 설정 (메모리 부족 방지)
+snakemake --cores 16 --jobs 2 --use-conda
+
+# 샘플이 많을 때: 3개 샘플 동시 처리
+snakemake --cores 18 --jobs 3 --resources mem_gb=60 --use-conda
+
+# 보수적인 설정: 한 번에 하나씩 (메모리 부족 시)
+snakemake --cores 12 --jobs 1 --use-conda
+```
+
+**파라미터 설명:**
+- `--cores N`: 전체 사용할 최대 CPU 코어 수
+- `--jobs N`: 동시에 실행할 최대 작업(샘플) 수
+- `--resources mem_gb=N`: 전체 메모리 제한 (GB)
+- `--use-conda`: Conda 환경 자동 활성화
+
+#### 5.4 리소스 모니터링
+
+실행 중 시스템 리소스를 모니터링하세요:
+
+```bash
+# 실시간 CPU/메모리 모니터링
+htop
+
+# 메모리 사용량 확인
+watch -n 1 free -h
+
+# STAR 프로세스 모니터링
+watch -n 1 'ps aux | grep STAR | head -5'
+
+# 디스크 I/O 모니터링
+iostat -x 2
+```
+
+#### 5.5 일반적인 서버 사양별 가이드
+
+| 서버 사양 | star_threads | featurecounts_threads | snakemake --jobs | 비고 |
+|-----------|--------------|----------------------|------------------|------|
+| 8 cores, 32GB RAM | 6 | 4 | 1 | 메모리 제약 큼 |
+| 12 cores, 62GB RAM | 12 | 8 | 2 | **현재 서버** |
+| 24 cores, 128GB RAM | 16 | 12 | 4 | 여유로운 처리 |
+| 48+ cores, 256GB+ RAM | 24 | 16 | 8 | 대규모 분석 |
+
+**주의사항:**
+- STAR 정렬은 메모리를 가장 많이 사용하므로 `--jobs` 값을 신중히 설정
+- 메모리 부족(OOM) 에러 발생 시 `--jobs` 값을 줄이거나 `star_threads` 감소
+- 디스크 I/O가 병목이 될 수 있으므로 SSD 사용 권장
+
+### 6. QC 리포트만 재생성
 
 ```bash
 snakemake --cores 1 results/qc_report.html --force
