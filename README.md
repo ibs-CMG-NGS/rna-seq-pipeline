@@ -65,6 +65,27 @@ conda activate rna-seq-pipeline
 
 ### 2. 데이터 준비
 
+#### 방법 1: 자동 다운로드 (권장)
+
+`data/raw/md5sum.txt` 파일에 다운로드 링크가 포함되어 있는 경우, 자동 다운로드 스크립트를 사용할 수 있습니다:
+
+```bash
+# Python 스크립트 사용 (권장)
+python download_fastq.py
+
+# 또는 Bash 스크립트 사용
+chmod +x download_fastq.sh
+./download_fastq.sh
+```
+
+**주요 기능:**
+- 모든 FASTQ 파일 자동 다운로드
+- MD5 checksum을 통한 파일 무결성 자동 검증
+- 이미 다운로드된 파일은 자동으로 스킵
+- 손상된 파일 자동 재다운로드
+
+#### 방법 2: 수동 복사
+
 ```bash
 # FASTQ 파일을 data/raw/ 디렉토리에 복사
 # 파일명 규칙: {sample_name}_R1.fastq.gz, {sample_name}_R2.fastq.gz
