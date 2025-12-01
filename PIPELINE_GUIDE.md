@@ -178,17 +178,38 @@ results/
 │       ├── Aligned.sortedByCoord.out.bam
 │       └── Log.final.out
 ├── counts/               # featureCounts 결과
-│   ├── counts_matrix.txt
-│   └── counts_matrix.txt.summary
+│   ├── counts_matrix.txt              # featureCounts 원본 출력 (메타데이터 포함)
+│   ├── counts_matrix.txt.summary      # 매핑 통계
+│   └── counts_matrix_clean.csv        # DE 분석용 클린 매트릭스 ⭐
 └── qc_report.html        # QC 리포트 (자동 생성)
 
 src/                      # Python 스크립트
-├── generate_qc_report.py # QC 리포트 생성기 (Snakemake에서 사용)
-├── check_results.py      # 결과 점검 유틸리티
-├── check_fastq.py        # FASTQ 검증 유틸리티
-├── find_read.py          # Read 검색 유틸리티
-└── fix_fastq.py          # FASTQ 수정 유틸리티
+├── generate_qc_report.py    # QC 리포트 생성기 (Snakemake에서 사용)
+├── convert_counts_matrix.py # Count matrix 변환기 (DE 분석용) ⭐
+├── check_results.py         # 결과 점검 유틸리티
+├── check_fastq.py           # FASTQ 검증 유틸리티
+├── find_read.py             # Read 검색 유틸리티
+└── fix_fastq.py             # FASTQ 수정 유틸리티
 ```
+
+### 🔄 Downstream 분석 연결
+
+**DE (Differential Expression) 분석을 위한 파일:**
+- `results/counts/counts_matrix_clean.csv` - DESeq2/edgeR/limma-voom용 정리된 count matrix
+  - 유전자 ID를 행 이름(index)으로
+  - 샘플 이름을 열 이름으로
+  - 메타데이터 컬럼(Chr, Start, End 등) 제거됨
+  - 샘플 경로가 깔끔한 이름으로 변환됨 (예: `GABA_8`, `Ctrl_3`)
+
+**파일 형식 예시:**
+```
+Geneid,GABA_8,Ctrl_4,GABA_5,Ctrl_3,...
+ENSMUSG00000104478,0,0,0,0,...
+ENSMUSG00000104385,0,0,0,0,...
+ENSMUSG00000086053,0,0,2,0,...
+```
+
+이 파일을 바로 `RNA-Seq_DE_GO_analysis` 파이프라인의 `config.yml`에서 `count_data_path`로 지정할 수 있습니다.
 
 ## 📈 QC 리포트 내용
 

@@ -17,6 +17,7 @@ ANNOTATION_GTF = config["annotation_gtf"]
 rule all:
     input:
         "results/counts/counts_matrix.txt",
+        "results/counts/counts_matrix_clean.csv",  # DE analysis용 clean matrix 추가
         config["qc_report_output"] if config.get("generate_qc_report", True) else []
 
 
@@ -99,6 +100,19 @@ rule featurecounts_quant:
                       -a {ANNOTATION_GTF} \
                       -o {output} \
                       {input.bams} > {log} 2>&1
+        """
+
+# --- 6-1. Count matrix 변환 (DE 분석용) ---
+rule convert_counts_matrix:
+    input:
+        "results/counts/counts_matrix.txt"
+    output:
+        "results/counts/counts_matrix_clean.csv"
+    log:
+        "logs/convert_counts.log"
+    shell:
+        """
+        python src/convert_counts_matrix.py {input} {output} > {log} 2>&1
         """
 
 # --- 7. QC 리포트 생성 규칙 ---
