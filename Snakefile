@@ -112,7 +112,7 @@ rule convert_counts_matrix:
         "logs/convert_counts.log"
     shell:
         """
-        python src/convert_counts_matrix.py {input} {output} > {log} 2>&1
+        python3 src/convert_counts_matrix.py {input} {output} > {log} 2>&1
         """
 
 # --- 7. QC 리포트 생성 규칙 ---

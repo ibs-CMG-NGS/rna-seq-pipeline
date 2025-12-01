@@ -14,7 +14,6 @@ Example:
 """
 
 import sys
-import pandas as pd
 import os
 
 
@@ -30,58 +29,90 @@ def convert_featurecounts_to_clean_matrix(input_file, output_file):
         Path to save cleaned count matrix
     """
     
-    # Read the featureCounts output, skipping comment lines
     print(f"Reading input file: {input_file}")
-    df = pd.read_csv(input_file, sep='\t', comment='#')
     
-    # Display original columns
-    print(f"\nOriginal columns: {list(df.columns)}")
-    print(f"Original shape: {df.shape}")
+    # Read the file line by line
+    with open(input_file, 'r') as f:
+        lines = f.readlines()
     
-    # Keep only Geneid and sample count columns
-    # Remove: Chr, Start, End, Strand, Length
-    metadata_cols = ['Chr', 'Start', 'End', 'Strand', 'Length']
-    cols_to_keep = ['Geneid'] + [col for col in df.columns if col not in metadata_cols + ['Geneid']]
+    # Skip comment lines and find header
+    data_lines = []
+    header_line = None
     
-    clean_df = df[cols_to_keep].copy()
-    
-    # Clean up sample names (remove path and .bam extension)
-    # e.g., "results/aligned/GABA_8/Aligned.sortedByCoord.out.bam" -> "GABA_8"
-    new_columns = ['Geneid']
-    for col in clean_df.columns[1:]:
-        if '/' in col:
-            # Extract sample name from path
-            sample_name = col.split('/')[-2] if col.endswith('.bam') else col.split('/')[-1]
-            sample_name = sample_name.replace('Aligned.sortedByCoord.out.bam', '').strip()
+    for line in lines:
+        if line.startswith('#'):
+            continue
+        if header_line is None:
+            header_line = line.strip()
         else:
-            sample_name = col.replace('.bam', '')
-        new_columns.append(sample_name)
+            data_lines.append(line.strip())
     
-    clean_df.columns = new_columns
+    # Parse header
+    header = header_line.split('\t')
+    print(f"\nOriginal columns: {header[:10]}...")  # Show first 10 columns
+    print(f"Total columns: {len(header)}")
     
-    # Set Geneid as index
-    clean_df.set_index('Geneid', inplace=True)
+    # Find column indices to keep (Geneid and sample columns)
+    # Skip: Chr, Start, End, Strand, Length (columns 1-5)
+    metadata_cols = {'Chr', 'Start', 'End', 'Strand', 'Length'}
     
-    # Create output directory if it doesn't exist
-    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+    keep_indices = []
+    new_header = []
     
-    # Save to CSV
+    for i, col_name in enumerate(header):
+        if col_name == 'Geneid':
+            keep_indices.append(i)
+            new_header.append('Geneid')
+        elif col_name not in metadata_cols:
+            keep_indices.append(i)
+            # Clean up sample name
+            sample_name = col_name
+            if '/' in sample_name:
+                # Extract sample name from path
+                # e.g., "results/aligned/GABA_8/Aligned.sortedByCoord.out.bam" -> "GABA_8"
+                parts = sample_name.split('/')
+                sample_name = parts[-2] if sample_name.endswith('.bam') else parts[-1]
+            sample_name = sample_name.replace('Aligned.sortedByCoord.out.bam', '').replace('.bam', '').strip()
+            new_header.append(sample_name)
+    
+    print(f"\nNew column names: {new_header}")
+    print(f"Number of samples: {len(new_header) - 1}")
+    
+    # Create output directory if needed
+    output_dir = os.path.dirname(output_file)
+    if output_dir and not os.path.exists(output_dir):
+        os.makedirs(output_dir, exist_ok=True)
+    
+    # Write cleaned matrix to CSV
     print(f"\nSaving cleaned matrix to: {output_file}")
-    clean_df.to_csv(output_file)
     
-    print(f"\nCleaned count matrix shape: {clean_df.shape}")
-    print(f"Sample names: {list(clean_df.columns)}")
-    print("\nFirst few rows:")
-    print(clean_df.head())
+    with open(output_file, 'w') as out:
+        # Write header
+        out.write(','.join(new_header) + '\n')
+        
+        # Write data
+        for line in data_lines:
+            fields = line.split('\t')
+            selected_fields = [fields[i] for i in keep_indices]
+            out.write(','.join(selected_fields) + '\n')
     
-    # Print summary statistics
-    print("\n=== Summary Statistics ===")
-    print(f"Total genes: {len(clean_df)}")
-    print(f"Total samples: {len(clean_df.columns)}")
-    print(f"\nGenes with zero counts across all samples: {(clean_df.sum(axis=1) == 0).sum()}")
-    print(f"Average counts per gene: {clean_df.sum(axis=1).mean():.2f}")
+    # Calculate simple statistics
+    total_genes = len(data_lines)
+    print(f"\n=== Summary Statistics ===")
+    print(f"Total genes: {total_genes}")
+    print(f"Total samples: {len(new_header) - 1}")
     
-    return clean_df
+    # Show first few lines
+    print("\nFirst 5 genes:")
+    for i, line in enumerate(data_lines[:5]):
+        fields = line.split('\t')
+        gene_id = fields[0]
+        counts = [fields[j] for j in keep_indices[1:6]]  # Show first 5 sample counts
+        print(f"  {gene_id}: {', '.join(counts)}...")
+    
+    print(f"\n✓ Conversion completed successfully!")
+    
+    return total_genes
 
 
 def main():
