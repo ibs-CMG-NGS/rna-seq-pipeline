@@ -44,7 +44,7 @@ ANNOTATION_GTF = config["annotation_gtf"]
 rule all:
     input:
         # Raw FastQC
-        expand(f"{QC_DIR}/{{sample}}_{{read}}_raw_fastqc.html", sample=SAMPLES, read=[1, 2]),
+        expand(f"{QC_DIR}/{{sample}}_{{read}}_fastqc.html", sample=SAMPLES, read=[1, 2]),
         # Trimmed reads
         expand(f"{TRIMMED_DIR}/{{sample}}_{{read}}.fastq.gz", sample=SAMPLES, read=[1, 2]),
         # Aligned BAM files
@@ -62,8 +62,8 @@ rule fastqc_raw:
     input:
         f"{RAW_DATA_DIR}/{{sample}}_{{read}}.fastq.gz"
     output:
-        html=f"{QC_DIR}/{{sample}}_{{read}}_raw_fastqc.html",
-        zip=f"{QC_DIR}/{{sample}}_{{read}}_raw_fastqc.zip"
+        html=f"{QC_DIR}/{{sample}}_{{read}}_fastqc.html",
+        zip=f"{QC_DIR}/{{sample}}_{{read}}_fastqc.zip"
     log:
         f"{LOGS_DIR}/fastqc/{{sample}}_{{read}}_raw.log"
     threads: config.get("fastqc_threads", 2)
@@ -99,7 +99,8 @@ rule star_align:
         r1=f"{TRIMMED_DIR}/{{sample}}_1.fastq.gz",
         r2=f"{TRIMMED_DIR}/{{sample}}_2.fastq.gz"
     output:
-        bam=f"{ALIGNED_DIR}/{{sample}}/Aligned.sortedByCoord.out.bam"
+        bam=f"{ALIGNED_DIR}/{{sample}}/Aligned.sortedByCoord.out.bam",
+        log_final=f"{ALIGNED_DIR}/{{sample}}/Log.final.out"
     log:
         f"{LOGS_DIR}/star/{{sample}}.log"
     threads: config["star_threads"]

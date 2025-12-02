@@ -120,6 +120,12 @@ snakemake --cores 18 --jobs 3 --resources mem_gb=60 --use-conda
 
 # 보수적인 설정: 한 번에 하나씩 (메모리 부족 시)
 snakemake --cores 12 --jobs 1 --use-conda
+
+# 네트워크 파일 시스템 사용 시 (NFS, 원격 스토리지)
+snakemake --cores 18 --jobs 2 --resources mem_gb=60 --latency-wait 120
+
+# 파일 시스템 latency가 심한 경우
+snakemake --cores 16 --jobs 2 --resources mem_gb=60 --latency-wait 180
 ```
 
 **파라미터 설명:**
@@ -127,6 +133,13 @@ snakemake --cores 12 --jobs 1 --use-conda
 - `--jobs N`: 동시에 실행할 최대 작업(샘플) 수
 - `--resources mem_gb=N`: 전체 메모리 제한 (GB)
 - `--use-conda`: Conda 환경 자동 활성화
+- `--latency-wait N`: 출력 파일 대기 시간 (초) - 네트워크 파일 시스템용
+
+**네트워크 파일 시스템 사용 시 주의사항:**
+- 원격 스토리지(NFS, SMB 등)에 결과를 저장하는 경우
+- `MissingOutputException` 에러 발생 시 `--latency-wait` 값을 증가
+- 파일 시스템 동기화 지연으로 인해 파일이 즉시 보이지 않을 수 있음
+- 권장값: 60-180초 (네트워크 상태에 따라 조정)
 
 #### 5.4 리소스 모니터링
 
@@ -259,6 +272,53 @@ cat logs/qc_report.log
 
 # 특정 단계 다시 실행
 snakemake --cores 8 --forcerun star_align
+```
+
+### MissingOutputException (파일 시스템 Latency 문제)
+
+**증상:**
+```
+MissingOutputException: Job completed successfully, but some output files are missing.
+Missing files after 5 seconds. This might be due to filesystem latency.
+```
+
+**원인:**
+- 네트워크 파일 시스템(NFS, SMB 등) 사용 시 파일 동기화 지연
+- 파일이 실제로 생성되었지만 메타데이터가 아직 전파되지 않음
+
+**해결 방법:**
+```bash
+# 대기 시간을 60초로 증가
+snakemake --cores 18 --jobs 2 --latency-wait 60
+
+# 심한 경우 120-180초로 증가
+snakemake --cores 16 --jobs 2 --latency-wait 180
+
+# 동시 작업 수를 줄이는 것도 도움이 됨
+snakemake --cores 12 --jobs 1 --latency-wait 120
+```
+
+### Command not found (cutadapt, fastqc, STAR 등)
+
+**증상:**
+```
+/usr/bin/bash: line 2: cutadapt: command not found
+exit status 127
+```
+
+**해결 방법:**
+```bash
+# Conda 환경이 활성화되어 있는지 확인
+conda activate rna-seq-pipeline
+
+# 또는 snakemake_env 등 사용 중인 환경 활성화
+conda activate snakemake_env
+
+# 필요한 도구가 설치되어 있는지 확인
+conda list | grep -E "cutadapt|fastqc|star|subread"
+
+# 도구가 없다면 설치
+conda install -c bioconda cutadapt fastqc star subread samtools
 ```
 
 ### QC 리포트가 생성되지 않을 때
