@@ -43,3 +43,4 @@ benchmarks/
 # Ignore any downloaded reference files (if large)
 # genome/*.fa
 # genome/*.fa.fai
+workflow.pdf
