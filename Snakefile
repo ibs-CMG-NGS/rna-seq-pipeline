@@ -1,7 +1,7 @@
 # Snakefile
 
 # --- 설정 파일 로드 ---
-configfile: "config.yaml"
+configfile: "config_H2O2_astrocyte.yaml"
 
 # --- 1. 전역 변수 설정 ---
 # 경로 변수 구성
