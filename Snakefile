@@ -19,6 +19,21 @@ LOGS_DIR = config.get("logs_dir", "logs")
 # 샘플 이름 정의
 SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}_1.fastq.gz")
 
+# 디버깅: 경로 및 샘플 정보 출력
+print(f"=" * 80)
+print(f"DEBUG INFO:")
+print(f"  DATA_DIR: {DATA_DIR}")
+print(f"  RAW_DATA_DIR: {RAW_DATA_DIR}")
+print(f"  RESULTS_DIR: {RESULTS_DIR}")
+print(f"  LOGS_DIR: {LOGS_DIR}")
+print(f"  Found {len(SAMPLES)} samples")
+if SAMPLES:
+    print(f"  Sample list: {SAMPLES[:5]}{'...' if len(SAMPLES) > 5 else ''}")
+else:
+    print(f"  WARNING: No samples found in {RAW_DATA_DIR}")
+    print(f"  Looking for pattern: {RAW_DATA_DIR}/*_1.fastq.gz")
+print(f"=" * 80)
+
 # 경로 변수 (config.yaml에서 로드)
 STAR_INDEX = config["star_index"]
 ANNOTATION_GTF = config["annotation_gtf"]
@@ -28,8 +43,16 @@ ANNOTATION_GTF = config["annotation_gtf"]
 # QC 리포트 생성 여부에 따라 최종 목표 설정
 rule all:
     input:
+        # Raw FastQC
+        expand(f"{QC_DIR}/{{sample}}_{{read}}_raw_fastqc.html", sample=SAMPLES, read=[1, 2]),
+        # Trimmed reads
+        expand(f"{TRIMMED_DIR}/{{sample}}_{{read}}.fastq.gz", sample=SAMPLES, read=[1, 2]),
+        # Aligned BAM files
+        expand(f"{ALIGNED_DIR}/{{sample}}/Aligned.sortedByCoord.out.bam", sample=SAMPLES),
+        # Count matrices
         f"{COUNTS_DIR}/counts_matrix.txt",
-        f"{COUNTS_DIR}/counts_matrix_clean.csv",  # DE analysis용 clean matrix 추가
+        f"{COUNTS_DIR}/counts_matrix_clean.csv",
+        # QC report
         f"{RESULTS_DIR}/{config.get('qc_report_filename', 'qc_report.html')}" if config.get("generate_qc_report", True) else []
 
 

@@ -44,3 +44,4 @@ benchmarks/
 # genome/*.fa
 # genome/*.fa.fai
 workflow.pdf
+config_H2O2_astrocyte.yaml
