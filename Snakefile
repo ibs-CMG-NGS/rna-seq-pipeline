@@ -99,7 +99,8 @@ rule featurecounts_quant:
     input:
         bams=expand(f"{ALIGNED_DIR}/{{sample}}/Aligned.sortedByCoord.out.bam", sample=SAMPLES)
     output:
-        f"{COUNTS_DIR}/counts_matrix.txt"
+        counts=f"{COUNTS_DIR}/counts_matrix.txt",
+        summary=f"{COUNTS_DIR}/counts_matrix.txt.summary"
     log:
         f"{LOGS_DIR}/featurecounts.log"
     threads: config["featurecounts_threads"]
@@ -110,7 +111,7 @@ rule featurecounts_quant:
                       -g {{config[attribute_type]}} \
                       -s {{config[strandedness]}} \
                       -a {ANNOTATION_GTF} \
-                      -o {{output}} \
+                      -o {{output.counts}} \
                       {{input.bams}} > {{log}} 2>&1
         """
 
