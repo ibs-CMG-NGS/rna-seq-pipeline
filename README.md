@@ -92,31 +92,55 @@ chmod +x download_fastq.sh
 cp /path/to/your/fastq/*_R*.fastq.gz data/raw/
 ```
 
-### 3. 설정 파일 수정
+### 3. 설정 파일 생성
 
-`config.yaml` 파일을 열어 다음 항목을 수정하세요:
+#### 프로젝트별 설정 파일 만들기
+
+`config.yaml`은 템플릿 파일이므로 직접 수정하지 마세요. 대신 프로젝트별로 복사하여 사용합니다:
+
+```bash
+# 템플릿을 복사하여 프로젝트별 설정 파일 생성
+cp config.yaml config_my_project.yaml
+
+# 설정 파일 수정
+nano config_my_project.yaml  # 또는 vi, code 등 원하는 에디터 사용
+```
+
+#### 주요 설정 항목
 
 ```yaml
-# STAR genome index 경로
+# === Directory Structure ===
+# 대용량 스토리지를 사용하는 경우 절대 경로 지정
+data_dir: "/home/ngs/data/rna-seq-pipeline/data/my_project"
+results_dir: "/home/ngs/data/rna-seq-pipeline/results/my_project"
+logs_dir: "/home/ngs/data/rna-seq-pipeline/logs/my_project"
+
+# === Reference Files ===
 star_index: "genome/star_index/"
+annotation_gtf: "genome/genes.gtf"
 
-# Gene annotation GTF 파일 경로
-annotation_gtf: "genome/annotation.gtf"
-
-# 필요시 다른 파라미터도 조정 가능
+# === Computational Resources ===
+star_threads: 12           # 시스템 CPU 코어 수에 맞게 조정
+star_memory_gb: 35         # 사용 가능한 RAM에 맞게 조정
+featurecounts_threads: 8
+cutadapt_threads: 4
 ```
+
+**참고:** 
+- `config_*.yaml` 파일은 Git에서 추적되지 않습니다 (`.gitignore`에 등록됨)
+- 각 프로젝트/데이터셋마다 별도의 설정 파일을 만들어 관리하세요
 
 ### 4. 파이프라인 실행
 
 ```bash
 # Dry-run (실제 실행하지 않고 작업 계획만 확인)
-snakemake --use-conda -n
+snakemake --configfile config_my_project.yaml -n
 
-# 실제 실행 (8개 코어 사용)
-snakemake --use-conda --cores 8
+# 실제 실행 (설정 파일의 스레드 수만큼 자동 사용)
+snakemake --configfile config_my_project.yaml -j 12
 
 # 특정 결과물만 생성
-snakemake --use-conda --cores 8 results/qc/multiqc_report.html
+snakemake --configfile config_my_project.yaml -j 12 results/qc_report.html
 ```
 
 ### 5. 워크플로우 시각화 (선택사항)
