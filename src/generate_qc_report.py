@@ -18,24 +18,39 @@ try:
     OUTPUT_FILE = str(snakemake.output[0])
     LOG_FILE = str(snakemake.log[0])
     SCRIPT_MODE = True
+    
+    # 절대 경로 추출
+    # OUTPUT_FILE: /home/ngs/data/ygkim/2025/H2O2_astrocyte/results/qc_report.html
+    # -> RESULTS_DIR: /home/ngs/data/ygkim/2025/H2O2_astrocyte/results
+    RESULTS_DIR = os.path.dirname(OUTPUT_FILE)
+    BASE_DIR = os.path.dirname(RESULTS_DIR)  # /home/ngs/data/ygkim/2025/H2O2_astrocyte
+    LOGS_DIR = os.path.join(BASE_DIR, 'logs')
+    DATA_DIR = os.path.join(BASE_DIR, 'raw')
+    
 except NameError:
     # 직접 실행 모드
     TOP_GENES = 10
     OUTPUT_FILE = 'results/qc_report.html'
     LOG_FILE = None
     SCRIPT_MODE = False
+    RESULTS_DIR = 'results'
+    BASE_DIR = '.'
+    LOGS_DIR = 'logs'
+    DATA_DIR = 'data'
 
 def get_sample_names():
     """trimmed 폴더에서 샘플 이름 추출"""
     samples = set()
-    for f in glob.glob('results/trimmed/*_1.fastq.gz'):
+    trimmed_dir = os.path.join(RESULTS_DIR, 'trimmed')
+    pattern = os.path.join(trimmed_dir, '*_1.fastq.gz')
+    for f in glob.glob(pattern):
         sample = os.path.basename(f).replace('_1.fastq.gz', '')
         samples.add(sample)
     return sorted(samples)
 
 def parse_cutadapt_log(sample):
     """Cutadapt 로그 파싱"""
-    log_file = f'logs/cutadapt/{sample}.log'
+    log_file = os.path.join(LOGS_DIR, 'cutadapt', f'{sample}.log')
     if not os.path.exists(log_file):
         return None
     
@@ -55,7 +70,7 @@ def parse_cutadapt_log(sample):
 
 def parse_star_log(sample):
     """STAR Log.final.out 파싱"""
-    log_file = f'results/aligned/{sample}/Log.final.out'
+    log_file = os.path.join(RESULTS_DIR, 'aligned', sample, 'Log.final.out')
     if not os.path.exists(log_file):
         return None
     
@@ -81,7 +96,7 @@ def parse_star_log(sample):
 
 def parse_featurecounts_summary():
     """featureCounts summary 파싱"""
-    summary_file = 'results/counts/counts_matrix.txt.summary'
+    summary_file = os.path.join(RESULTS_DIR, 'counts', 'counts_matrix.txt.summary')
     if not os.path.exists(summary_file):
         return None
     
@@ -107,7 +122,7 @@ def parse_featurecounts_summary():
 
 def analyze_count_matrix():
     """Count matrix 분석"""
-    count_file = 'results/counts/counts_matrix.txt'
+    count_file = os.path.join(RESULTS_DIR, 'counts', 'counts_matrix.txt')
     if not os.path.exists(count_file):
         return None
     
@@ -689,22 +704,29 @@ def generate_html_report(samples):
 """
     
     for sample in samples:
+        raw_r1 = os.path.join(BASE_DIR, 'raw', f'{sample}_1.fastq.gz')
+        raw_r2 = os.path.join(BASE_DIR, 'raw', f'{sample}_2.fastq.gz')
+        trimmed_r1 = os.path.join(RESULTS_DIR, 'trimmed', f'{sample}_1.fastq.gz')
+        trimmed_r2 = os.path.join(RESULTS_DIR, 'trimmed', f'{sample}_2.fastq.gz')
+        bam = os.path.join(RESULTS_DIR, 'aligned', sample, 'Aligned.sortedByCoord.out.bam')
+        
         html += f"""
                         <tr>
                             <td><strong>{sample}</strong></td>
-                            <td>{get_file_size(f'data/raw/{sample}_1.fastq.gz')}</td>
-                            <td>{get_file_size(f'data/raw/{sample}_2.fastq.gz')}</td>
-                            <td>{get_file_size(f'results/trimmed/{sample}_1.fastq.gz')}</td>
-                            <td>{get_file_size(f'results/trimmed/{sample}_2.fastq.gz')}</td>
-                            <td>{get_file_size(f'results/aligned/{sample}/Aligned.sortedByCoord.out.bam')}</td>
+                            <td>{get_file_size(raw_r1)}</td>
+                            <td>{get_file_size(raw_r2)}</td>
+                            <td>{get_file_size(trimmed_r1)}</td>
+                            <td>{get_file_size(trimmed_r2)}</td>
+                            <td>{get_file_size(bam)}</td>
                         </tr>
 """
     
+    counts_matrix = os.path.join(RESULTS_DIR, 'counts', 'counts_matrix.txt')
     html += f"""
                     </tbody>
                 </table>
                 <div style="margin-top: 20px;">
-                    <strong>Count Matrix:</strong> {get_file_size('results/counts/counts_matrix.txt')}
+                    <strong>Count Matrix:</strong> {get_file_size(counts_matrix)}
                 </div>
             </div>
         </div>
@@ -731,12 +753,16 @@ def main():
     
     print("🔬 RNA-seq Pipeline QC Report Generator")
     print("=" * 60)
+    print(f"Script mode: {SCRIPT_MODE}")
+    print(f"RESULTS_DIR: {RESULTS_DIR}")
+    print(f"LOGS_DIR: {LOGS_DIR}")
+    print(f"BASE_DIR: {BASE_DIR}")
     
     # 샘플 이름 수집
     samples = get_sample_names()
     
     if not samples:
-        print("❌ No samples found in results/trimmed/")
+        print(f"❌ No samples found in {os.path.join(RESULTS_DIR, 'trimmed')}")
         print("   Make sure the pipeline has been run successfully.")
         if LOG_FILE and SCRIPT_MODE:
             log_f.close()
