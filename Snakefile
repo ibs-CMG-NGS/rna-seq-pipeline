@@ -19,6 +19,12 @@ LOGS_DIR = config.get("logs_dir", "logs")
 # 샘플 이름 정의
 SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}_1.fastq.gz")
 
+# 로그 디렉토리 자동 생성 (FastQC 등의 log 파일을 위해 필요)
+import os
+os.makedirs(f"{LOGS_DIR}/fastqc", exist_ok=True)
+os.makedirs(f"{LOGS_DIR}/cutadapt", exist_ok=True)
+os.makedirs(f"{LOGS_DIR}/star", exist_ok=True)
+
 # 디버깅: 경로 및 샘플 정보 출력
 print(f"=" * 80)
 print(f"DEBUG INFO:")
