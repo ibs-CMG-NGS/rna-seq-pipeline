@@ -168,7 +168,10 @@ rule generate_qc_report:
     output:
         f"{RESULTS_DIR}/{config.get('qc_report_filename', 'qc_report.html')}"
     params:
-        top_genes=config.get("qc_top_genes", 10)
+        top_genes=config.get("qc_top_genes", 10),
+        logs_dir=LOGS_DIR,
+        results_dir=RESULTS_DIR,
+        data_dir=DATA_DIR
     log:
         f"{LOGS_DIR}/qc_report.log"
     script:

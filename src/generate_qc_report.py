@@ -19,13 +19,11 @@ try:
     LOG_FILE = str(snakemake.log[0])
     SCRIPT_MODE = True
     
-    # 절대 경로 추출
-    # OUTPUT_FILE: /home/ngs/data/ygkim/2025/H2O2_astrocyte/results/qc_report.html
-    # -> RESULTS_DIR: /home/ngs/data/ygkim/2025/H2O2_astrocyte/results
-    RESULTS_DIR = os.path.dirname(OUTPUT_FILE)
-    BASE_DIR = os.path.dirname(RESULTS_DIR)  # /home/ngs/data/ygkim/2025/H2O2_astrocyte
-    LOGS_DIR = os.path.join(BASE_DIR, 'logs')
-    DATA_DIR = os.path.join(BASE_DIR, 'raw')
+    # Snakemake params에서 절대 경로 직접 가져오기
+    LOGS_DIR = snakemake.params.get('logs_dir')
+    RESULTS_DIR = snakemake.params.get('results_dir')
+    DATA_DIR = snakemake.params.get('data_dir')
+    BASE_DIR = DATA_DIR  # data_dir이 base directory
     
 except NameError:
     # 직접 실행 모드
