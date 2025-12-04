@@ -54,18 +54,28 @@ def parse_cutadapt_log(sample):
     if not os.path.exists(log_file):
         return None
     
+    import re
     data = {}
     with open(log_file, 'r') as f:
         content = f.read()
         for line in content.split('\n'):
             if 'Total read pairs processed' in line:
-                data['total_pairs'] = line.split(':')[1].strip()
+                # Extract number with commas: "52,280,544"
+                m = re.search(r'([\d,]+)', line)
+                if m:
+                    data['total_pairs'] = int(m.group(1).replace(',', ''))
             elif 'Pairs that were too short' in line:
-                data['too_short'] = line.split(':')[1].strip()
+                m = re.search(r'([\d,]+)', line)
+                if m:
+                    data['too_short'] = int(m.group(1).replace(',', ''))
             elif 'Pairs written (passing filters)' in line:
-                data['passed'] = line.split(':')[1].strip()
+                m = re.search(r'([\d,]+)', line)
+                if m:
+                    data['passed'] = int(m.group(1).replace(',', ''))
             elif 'Total basepairs processed' in line:
-                data['total_bp'] = line.split(':')[1].strip().split()[0]
+                m = re.search(r'([\d,]+)', line)
+                if m:
+                    data['total_bp'] = int(m.group(1).replace(',', ''))
     return data
 
 def parse_star_log(sample):
@@ -74,24 +84,39 @@ def parse_star_log(sample):
     if not os.path.exists(log_file):
         return None
     
+    import re
     data = {}
     with open(log_file, 'r') as f:
         for line in f:
             line = line.strip()
             if 'Number of input reads' in line:
-                data['input_reads'] = line.split('|')[1].strip()
+                m = re.search(r'(\d[\d,]*)', line)
+                if m:
+                    data['input_reads'] = int(m.group(1).replace(',', ''))
             elif 'Uniquely mapped reads number' in line:
-                data['unique_mapped'] = line.split('|')[1].strip()
+                m = re.search(r'(\d[\d,]*)', line)
+                if m:
+                    data['unique_mapped'] = int(m.group(1).replace(',', ''))
             elif 'Uniquely mapped reads %' in line:
-                data['unique_mapped_pct'] = line.split('|')[1].strip()
+                m = re.search(r'([\d.]+)%', line)
+                if m:
+                    data['unique_mapped_pct'] = float(m.group(1))
             elif 'Number of reads mapped to multiple loci' in line:
-                data['multi_mapped'] = line.split('|')[1].strip()
+                m = re.search(r'(\d[\d,]*)', line)
+                if m:
+                    data['multi_mapped'] = int(m.group(1).replace(',', ''))
             elif '% of reads mapped to multiple loci' in line:
-                data['multi_mapped_pct'] = line.split('|')[1].strip()
+                m = re.search(r'([\d.]+)%', line)
+                if m:
+                    data['multi_mapped_pct'] = float(m.group(1))
             elif 'Number of reads unmapped: too short' in line:
-                data['unmapped_short'] = line.split('|')[1].strip()
+                m = re.search(r'(\d[\d,]*)', line)
+                if m:
+                    data['unmapped_short'] = int(m.group(1).replace(',', ''))
             elif '% of reads unmapped: too short' in line:
-                data['unmapped_short_pct'] = line.split('|')[1].strip()
+                m = re.search(r'([\d.]+)%', line)
+                if m:
+                    data['unmapped_short_pct'] = float(m.group(1))
     return data
 
 def parse_featurecounts_summary():
@@ -469,16 +494,16 @@ def generate_html_report(samples):
             html += f"""
                         <tr>
                             <td><strong>{sample}</strong></td>
-                            <td>{data.get('total_pairs', 'N/A')}</td>
-                            <td>{data.get('passed', 'N/A')}</td>
-                            <td>{data.get('too_short', 'N/A')}</td>
+                            <td>{data.get('total_pairs', 'N/A'):,}</td>
+                            <td>{data.get('passed', 'N/A'):,}</td>
+                            <td>{data.get('too_short', 'N/A'):,}</td>
                             <td>
 """
             # Pass rate 계산 및 진행 바 추가
             if 'passed' in data and 'total_pairs' in data:
                 try:
-                    passed = int(data['passed'].replace(',', ''))
-                    total = int(data['total_pairs'].replace(',', ''))
+                    passed = data['passed']
+                    total = data['total_pairs']
                     pass_rate = (passed / total) * 100
                     color_class = 'metric-good' if pass_rate > 95 else 'metric-warning'
                     html += f"""
@@ -528,7 +553,7 @@ def generate_html_report(samples):
             
             # 매핑률 평가
             try:
-                rate = float(unique_pct.replace('%', ''))
+                rate = float(unique_pct) if isinstance(unique_pct, (int, float)) else float(unique_pct.replace('%', ''))
                 if rate > 85:
                     badge = '<span class="badge badge-success">Excellent</span>'
                     color_class = 'metric-good'
@@ -542,13 +567,24 @@ def generate_html_report(samples):
                 badge = ''
                 color_class = ''
             
+            # Format numbers with commas
+            input_reads = f"{data.get('input_reads', 'N/A'):,}" if isinstance(data.get('input_reads'), int) else data.get('input_reads', 'N/A')
+            unique_mapped = f"{data.get('unique_mapped', 'N/A'):,}" if isinstance(data.get('unique_mapped'), int) else data.get('unique_mapped', 'N/A')
+            multi_mapped = f"{data.get('multi_mapped', 'N/A'):,}" if isinstance(data.get('multi_mapped'), int) else data.get('multi_mapped', 'N/A')
+            unmapped_short = f"{data.get('unmapped_short', 'N/A'):,}" if isinstance(data.get('unmapped_short'), int) else data.get('unmapped_short', 'N/A')
+            
+            # Format percentages
+            unique_pct_str = f"({unique_pct:.2f}%)" if isinstance(unique_pct, (int, float)) else f"({unique_pct})"
+            multi_pct_str = f"({multi_pct:.2f}%)" if isinstance(multi_pct, (int, float)) else f"({multi_pct})"
+            unmapped_pct_str = f"({unmapped_pct:.2f}%)" if isinstance(unmapped_pct, (int, float)) else f"({unmapped_pct})"
+            
             html += f"""
                         <tr>
                             <td><strong>{sample}</strong></td>
-                            <td>{data.get('input_reads', 'N/A')}</td>
-                            <td>{data.get('unique_mapped', 'N/A')} <span class="{color_class}">({unique_pct})</span></td>
-                            <td>{data.get('multi_mapped', 'N/A')} ({multi_pct})</td>
-                            <td>{data.get('unmapped_short', 'N/A')} ({unmapped_pct})</td>
+                            <td>{input_reads}</td>
+                            <td>{unique_mapped} <span class="{color_class}">{unique_pct_str}</span></td>
+                            <td>{multi_mapped} {multi_pct_str}</td>
+                            <td>{unmapped_short} {unmapped_pct_str}</td>
                             <td>{badge}</td>
                         </tr>
 """
