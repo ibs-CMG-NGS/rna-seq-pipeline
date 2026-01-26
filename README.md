@@ -7,11 +7,12 @@ Paired-end RNA-seq 데이터 분석을 위한 Snakemake 기반 자동화 파이�
 이 파이프라인은 다음 단계를 자동으로 수행합니다:
 
 1. **Quality Control (FastQC)** - 원본 데이터 품질 검사
-2. **Adapter Trimming (cutadapt)** - 어댑터 제거 및 품질 기반 트리밍
-3. **Quality Control (FastQC)** - 트리밍 후 품질 검사
-4. **Alignment (STAR)** - 레퍼런스 게놈에 리드 정렬
-5. **Quantification (featureCounts)** - 유전자 발현량 정량화
-6. **Summary Report (MultiQC)** - 전체 분석 품질 리포트 생성
+2. **🆕 Automatic QC Evaluation** - FastQC 결과 자동 평가 및 문제 샘플 식별
+3. **Adapter Trimming (cutadapt)** - 어댑터 제거 및 품질 기반 트리밍
+4. **Quality Control (FastQC)** - 트리밍 후 품질 검사
+5. **Alignment (STAR)** - 레퍼런스 게놈에 리드 정렬
+6. **Quantification (featureCounts)** - 유전자 발현량 정량화
+7. **Summary Report (MultiQC)** - 전체 분석 품질 리포트 생성
 
 ## 🔧 요구사항
 
@@ -158,6 +159,8 @@ snakemake --rulegraph | dot -Tpdf > rulegraph.pdf
 ### 주요 출력 파일
 
 - `results/qc/multiqc_report.html` - 전체 분석 품질 요약 리포트
+- **🆕 `results/qc/fastqc_evaluation.txt`** - FastQC 자동 평가 리포트 (PASS/WARN/FAIL)
+- **🆕 `results/qc/fastqc_evaluation.json`** - FastQC 평가 결과 (JSON 형식)
 - `results/counts/counts_matrix.txt` - 유전자별 read count 매트릭스
 - `results/counts/counts_matrix.txt.summary` - featureCounts 통계
 
@@ -226,6 +229,14 @@ snakemake --rulegraph | dot -Tpdf > rulegraph.pdf
 - featureCounts: http://subread.sourceforge.net/
 - MultiQC: https://multiqc.info/
 - Snakemake: https://snakemake.readthedocs.io/
+
+## 📖 추가 문서
+
+- **[FASTQC_GUIDE.md](FASTQC_GUIDE.md)** - FastQC 리포트 해석 상세 가이드
+- **🆕 [FASTQC_AUTO_EVAL_GUIDE.md](FASTQC_AUTO_EVAL_GUIDE.md)** - FastQC 자동 평가 기능 사용법
+- **[PIPELINE_GUIDE.md](PIPELINE_GUIDE.md)** - 파이프라인 상세 사용법
+- **[QC_REPORT_GUIDE.md](QC_REPORT_GUIDE.md)** - QC 리포트 해석 가이드
+- **[PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)** - 프로젝트 구조 설명
 
 ## 📧 문의
 

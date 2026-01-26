@@ -56,3 +56,31 @@ strandedness: 0  # 0=unstranded, 1=stranded (forward), 2=stranded (reverse)
 generate_qc_report: true  # Whether to generate HTML QC report (set to true to enable)
 qc_report_filename: "qc_report.html"  # QC report filename (will be placed in results_dir)
 qc_top_genes: 10  # Number of top expressed genes to show per sample
+
+# === FastQC Auto-Evaluation Parameters ===
+# These thresholds are used for automatic QC evaluation
+# Based on FASTQC_GUIDE.md recommendations for RNA-seq data
+fastqc_evaluation:
+  enabled: true  # Enable automatic FastQC evaluation
+  
+  # Basic Statistics thresholds
+  min_total_sequences: 1000000  # Minimum number of reads (1M)
+  min_gc_content: 30  # Minimum GC% (species-dependent)
+  max_gc_content: 70  # Maximum GC% (species-dependent)
+  
+  # Quality Score thresholds
+  min_median_quality: 28  # Minimum median Phred score (Q28+)
+  min_lower_quartile: 20  # Minimum lower quartile Phred score (Q20+)
+  min_q30_percentage: 75  # Minimum percentage of reads with Q30+ (75%)
+  
+  # N content thresholds
+  max_n_content: 5.0  # Maximum N% allowed (5%)
+  critical_n_content: 10.0  # Critical N% threshold (10%)
+  
+  # Adapter content thresholds
+  max_adapter_trimmed: 1.0  # Maximum adapter% after trimming (1%)
+  warn_adapter_raw: 10.0  # Warning threshold for raw data adapter% (10%)
+  
+  # Output files
+  evaluation_report: "fastqc_evaluation.txt"  # Text report file
+  evaluation_json: "fastqc_evaluation.json"  # JSON results file

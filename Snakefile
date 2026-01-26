@@ -51,6 +51,8 @@ rule all:
     input:
         # Raw FastQC
         expand(f"{QC_DIR}/{{sample}}_{{read}}_fastqc.html", sample=SAMPLES, read=[1, 2]),
+        # FastQC auto-evaluation (raw data)
+        f"{QC_DIR}/{config.get('fastqc_evaluation', {}).get('evaluation_report', 'fastqc_evaluation.txt')}" if config.get('fastqc_evaluation', {}).get('enabled', True) else [],
         # Trimmed reads
         expand(f"{TRIMMED_DIR}/{{sample}}_{{read}}.fastq.gz", sample=SAMPLES, read=[1, 2]),
         # Aligned BAM files
@@ -62,8 +64,6 @@ rule all:
         f"{RESULTS_DIR}/{config.get('qc_report_filename', 'qc_report.html')}" if config.get("generate_qc_report", True) else []
 
 
-# --- 3. Raw 데이터 QC (FastQC) 규칙 ---
-# (이전과 동일)
 rule fastqc_raw:
     input:
         f"{RAW_DATA_DIR}/{{sample}}_{{read}}.fastq.gz"
@@ -75,6 +75,27 @@ rule fastqc_raw:
     threads: config.get("fastqc_threads", 2)
     shell:
         f"fastqc {{input}} -o {QC_DIR}/ > {{log}} 2>&1"
+
+
+# --- 3-1. FastQC 결과 자동 평가 (Raw 데이터) ---
+rule evaluate_fastqc_raw:
+    input:
+        fastqc_zips=expand(f"{QC_DIR}/{{sample}}_{{read}}_fastqc.zip", sample=SAMPLES, read=[1, 2])
+    output:
+        report=f"{QC_DIR}/{config.get('fastqc_evaluation', {}).get('evaluation_report', 'fastqc_evaluation.txt')}",
+        json=f"{QC_DIR}/{config.get('fastqc_evaluation', {}).get('evaluation_json', 'fastqc_evaluation.json')}"
+    params:
+        qc_dir=QC_DIR,
+        config_params=config.get('fastqc_evaluation', {})
+    log:
+        f"{LOGS_DIR}/fastqc/evaluate_raw.log"
+    shell:
+        """
+        python3 src/evaluate_fastqc.py \
+            {params.qc_dir} \
+            -o {output.report} \
+            --json {output.json} > {log} 2>&1
+        """
 
 
 # --- 4. 어댑터 제거 (cutadapt) 규칙 ---
