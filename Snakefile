@@ -1,12 +1,16 @@
 # Snakefile
 
 # --- 설정 파일 로드 ---
-configfile: "config_H2O2_astrocyte.yaml"
+# 기본값: config.yaml, 실행 시 --configfile 옵션으로 오버라이드 가능
+# 예: snakemake --configfile config_human_H2O2.yaml -j 12
+configfile: "config.yaml"
 
 # --- 1. 전역 변수 설정 ---
 # 경로 변수 구성
 DATA_DIR = config.get("data_dir", "data")
-RAW_DATA_DIR = f"{DATA_DIR}/{config.get('raw_data_subdir', 'raw')}"
+RAW_DATA_SUBDIR = config.get("raw_data_subdir", "raw")
+# raw_data_subdir가 비어있으면 DATA_DIR을 그대로 사용
+RAW_DATA_DIR = f"{DATA_DIR}/{RAW_DATA_SUBDIR}" if RAW_DATA_SUBDIR else DATA_DIR
 
 RESULTS_DIR = config.get("results_dir", "results")
 TRIMMED_DIR = f"{RESULTS_DIR}/{config.get('trimmed_subdir', 'trimmed')}"
