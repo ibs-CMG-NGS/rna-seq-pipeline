@@ -64,6 +64,8 @@ rule all:
         # Count matrices
         f"{COUNTS_DIR}/counts_matrix.txt",
         f"{COUNTS_DIR}/counts_matrix_clean.csv",
+        # MultiQC report
+        f"{RESULTS_DIR}/multiqc_report.html" if config.get("generate_multiqc", True) else [],
         # QC report
         f"{RESULTS_DIR}/{config.get('qc_report_filename', 'qc_report.html')}" if config.get("generate_qc_report", True) else []
 
@@ -183,7 +185,39 @@ rule convert_counts_matrix:
         python3 src/convert_counts_matrix.py {input} {output} > {log} 2>&1
         """
 
-# --- 7. QC 리포트 생성 규칙 ---
+# --- 7. MultiQC 리포트 생성 규칙 ---
+rule multiqc:
+    input:
+        # FastQC results
+        fastqc_raw=expand(f"{QC_DIR}/{{sample}}_{{read}}_fastqc.zip", sample=SAMPLES, read=[1, 2]),
+        # Cutadapt logs
+        cutadapt_logs=expand(f"{LOGS_DIR}/cutadapt/{{sample}}.log", sample=SAMPLES),
+        # STAR logs
+        star_logs=expand(f"{ALIGNED_DIR}/{{sample}}/Log.final.out", sample=SAMPLES),
+        # featureCounts summary
+        fc_summary=f"{COUNTS_DIR}/counts_matrix.txt.summary"
+    output:
+        f"{RESULTS_DIR}/multiqc_report.html"
+    params:
+        results_dir=RESULTS_DIR,
+        qc_dir=QC_DIR,
+        logs_dir=LOGS_DIR,
+        aligned_dir=ALIGNED_DIR,
+        counts_dir=COUNTS_DIR
+    log:
+        f"{LOGS_DIR}/multiqc.log"
+    shell:
+        """
+        multiqc {params.qc_dir} {params.logs_dir} {params.aligned_dir} {params.counts_dir} \
+            -o {params.results_dir} \
+            -n multiqc_report.html \
+            --force \
+            --title "RNA-seq QC Report" \
+            --comment "Comprehensive quality control report for RNA-seq analysis" \
+            > {log} 2>&1
+        """
+
+# --- 8. QC 리포트 생성 규칙 ---
 rule generate_qc_report:
     input:
         counts=f"{COUNTS_DIR}/counts_matrix.txt",
