@@ -1,9 +1,9 @@
 # Snakefile
 
 # --- 설정 파일 로드 ---
-# 기본값: config.yaml, 실행 시 --configfile 옵션으로 오버라이드 가능
-# 예: snakemake --configfile config_human_H2O2.yaml -j 12
-configfile: "config.yaml"
+# 기본값: config/default.yaml, 실행 시 --configfile 옵션으로 오버라이드 가능
+# 예: snakemake --configfile config/projects/H2O2_human_2025.yaml -j 12
+configfile: "config/default.yaml"
 
 # --- 1. 전역 변수 설정 ---
 import os
@@ -188,7 +188,7 @@ rule evaluate_fastqc_raw:
         f"{LOGS_DIR}/fastqc/evaluate_raw.log"
     shell:
         """
-        python3 src/evaluate_fastqc.py \
+        python3 src/qc/evaluate_fastqc.py \
             {params.qc_dir} \
             -o {output.report} \
             --json {output.json} > {log} 2>&1
@@ -275,7 +275,7 @@ rule convert_counts_matrix:
         f"{LOGS_DIR}/convert_counts.log"
     shell:
         """
-        python3 src/convert_counts_matrix.py {input} {output} > {log} 2>&1
+        python3 src/quantification/convert_counts_matrix.py {input} {output} > {log} 2>&1
         """
 
 # --- 7. MultiQC 리포트 생성 규칙 ---
@@ -327,7 +327,7 @@ rule generate_qc_report:
     log:
         f"{LOGS_DIR}/qc_report.log"
     script:
-        "src/generate_qc_report.py"
+        "src/qc/generate_qc_report.py"
 
 
 # ========================================================================
@@ -369,7 +369,7 @@ rule generate_qc_summary:
         """
         mkdir -p $(dirname {output.qc_json})
         mkdir -p $(dirname {log})
-        python3 scripts/generate_qc_summary.py \
+        python3 scripts/standardization/generate_qc_summary.py \
             --sample-id {params.sample_id} \
             --star-log {input.star_log} \
             --featurecounts {input.fc_summary} \
@@ -398,7 +398,7 @@ rule generate_manifest:
         """
         mkdir -p $(dirname {output.manifest})
         mkdir -p $(dirname {log})
-        python3 scripts/generate_manifest.py \
+        python3 scripts/standardization/generate_manifest.py \
             --sample-dir {params.sample_dir} \
             --sample-id {params.sample_id} \
             --project-id {params.project_id} \

@@ -28,26 +28,47 @@ Paired-end RNA-seq 데이터 분석을 위한 Snakemake 기반 자동화 파이�
 ## 📁 디렉토리 구조
 
 ```
-rna_seq_pipeline/
+rna-seq-pipeline/
 ├── Snakefile              # 파이프라인 워크플로우 정의
-├── config.yaml            # 설정 파일 (사용자 수정 필요)
 ├── environment.yaml       # Conda 환경 정의
+├── config/                # 설정 파일
+│   ├── default.yaml       # 기본 설정 템플릿
+│   ├── projects/          # 프로젝트별 설정
+│   │   └── H2O2_human_2025.yaml
+│   └── samples/           # 샘플 시트
+│       ├── master.csv     # 마스터 샘플 시트
+│       └── template.tsv   # 샘플 시트 템플릿
+├── src/                   # 파이프라인 소스 코드
+│   ├── qc/                # QC 스크립트
+│   ├── preprocessing/     # 전처리 스크립트
+│   ├── quantification/    # 정량화 스크립트
+│   └── utils/             # 유틸리티
+├── scripts/               # 독립 실행 도구
+│   ├── standardization/   # 표준화 도구
+│   └── data/              # 데이터 관리 도구
+├── docs/                  # 문서
+│   ├── user/              # 사용자 가이드
+│   └── developer/         # 개발자 문서
+├── tests/                 # 테스트
 ├── data/
 │   └── raw/              # 원본 FASTQ 파일 위치
-│       ├── sample1_R1.fastq.gz
-│       ├── sample1_R2.fastq.gz
-│       ├── sample2_R1.fastq.gz
-│       └── sample2_R2.fastq.gz
+│       ├── sample1_1.fastq.gz
+│       ├── sample1_2.fastq.gz
+│       ├── sample2_1.fastq.gz
+│       └── sample2_2.fastq.gz
 ├── genome/
 │   ├── star_index/       # STAR genome index
-│   └── annotation.gtf    # Gene annotation 파일
-├── results/
+│   └── genes.gtf         # Gene annotation 파일
+├── results/              # 분석 결과
 │   ├── qc/               # FastQC 및 MultiQC 결과
 │   ├── trimmed/          # 트리밍된 FASTQ 파일
 │   ├── aligned/          # STAR 정렬 결과 (BAM 파일)
 │   └── counts/           # featureCounts 결과
 └── logs/                 # 각 작업의 로그 파일
     ├── fastqc/           # FastQC 로그
+    ├── cutadapt/         # Cutadapt 로그
+    └── star/             # STAR 로그
+```
     ├── cutadapt/         # cutadapt 로그
     └── star/             # STAR 정렬 로그
 ```
@@ -232,11 +253,16 @@ snakemake --rulegraph | dot -Tpdf > rulegraph.pdf
 
 ## 📖 추가 문서
 
-- **[FASTQC_GUIDE.md](FASTQC_GUIDE.md)** - FastQC 리포트 해석 상세 가이드
-- **🆕 [FASTQC_AUTO_EVAL_GUIDE.md](FASTQC_AUTO_EVAL_GUIDE.md)** - FastQC 자동 평가 기능 사용법
-- **[PIPELINE_GUIDE.md](PIPELINE_GUIDE.md)** - 파이프라인 상세 사용법
-- **[QC_REPORT_GUIDE.md](QC_REPORT_GUIDE.md)** - QC 리포트 해석 가이드
-- **[PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)** - 프로젝트 구조 설명
+### 사용자 가이드
+- **[PIPELINE_GUIDE.md](docs/user/PIPELINE_GUIDE.md)** - 파이프라인 상세 사용법
+- **[FASTQC_GUIDE.md](docs/user/FASTQC_GUIDE.md)** - FastQC 리포트 해석 상세 가이드
+- **🆕 [FASTQC_AUTO_EVAL_GUIDE.md](docs/user/FASTQC_AUTO_EVAL_GUIDE.md)** - FastQC 자동 평가 기능 사용법
+- **[QC_REPORT_GUIDE.md](docs/user/QC_REPORT_GUIDE.md)** - QC 리포트 해석 가이드
+
+### 개발자 문서
+- **[PROJECT_STRUCTURE.md](docs/developer/PROJECT_STRUCTURE.md)** - 프로젝트 구조 설명
+- **[STANDARDIZATION.md](docs/developer/STANDARDIZATION.md)** - 파이프라인 표준화 가이드
+- **[PROJECT_REORGANIZATION.md](docs/developer/PROJECT_REORGANIZATION.md)** - 프로젝트 재구성 계획
 
 ## 📧 문의
 
