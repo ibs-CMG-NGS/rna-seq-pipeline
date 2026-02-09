@@ -73,6 +73,163 @@ rna-seq-pipeline/
     └── star/             # STAR 정렬 로그
 ```
 
+## 🆕 새 프로젝트 시작하기
+
+새로운 RNA-seq 프로젝트를 시작하는 경우 다음 단계를 따라주세요:
+
+### Step 1: 프로젝트 설정 파일 생성
+
+```bash
+# 템플릿을 복사하여 새 프로젝트 설정 파일 생성
+cp config/config.yaml config/projects/config_MY_PROJECT.yaml
+```
+
+> **참고:** `config_*.yaml` 파일은 Git에서 추적되지 않으므로 프로젝트별로 자유롭게 생성 가능합니다.
+
+### Step 2: 프로젝트 설정 수정
+
+`config/projects/config_MY_PROJECT.yaml` 파일을 열어 다음 항목들을 수정하세요:
+
+#### 필수 수정 항목
+
+```yaml
+# 1. 데이터 경로
+data_dir: "/home/ngs/data/MY_PROJECT/fastq"  # FASTQ 파일 위치 (절대경로 권장)
+raw_data_subdir: ""  # FASTQ가 data_dir 바로 아래 있으면 비워둠
+
+# 2. 프로젝트 정보
+project_id: "MY_PROJECT_2025"  # 고유한 프로젝트 ID
+pipeline_type: "rna-seq"  # 파이프라인 타입
+
+# 3. 결과 저장 경로
+base_results_dir: "/home/ngs/data/results"  # 결과 저장 베이스 디렉토리
+use_standard_structure: true  # 표준 구조 사용 (권장)
+
+# 4. Reference 파일 경로
+genome_dir: "/home/ngs/data/genome/SPECIES_BUILD"  # 예: human_GRCh38, mouse_GRCm39
+star_index: "/home/ngs/data/genome/SPECIES_BUILD/star_index/"
+annotation_gtf: "/home/ngs/data/genome/SPECIES_BUILD/genes.gtf"
+```
+
+#### Species별 조정 항목
+
+```yaml
+# 5. FastQC 평가 기준 (species에 따라 GC content 조정 필요)
+fastqc_evaluation:
+  # Human (GRCh38): 35-65% (GC ~40-45%)
+  # Mouse (GRCm39): 40-55% (GC ~42%)
+  # Rat (Rnor_6.0): 40-55% (GC ~42%)
+  min_gc_content: 35  # Species에 맞게 조정
+  max_gc_content: 65  # Species에 맞게 조정
+  min_total_sequences: 5000000  # 최소 5M reads
+```
+
+#### 선택 수정 항목
+
+```yaml
+# 6. 계산 리소스 (서버 사양에 맞게 조정)
+star_threads: 12  # CPU 코어 수
+star_memory_gb: 35  # 사용 가능 RAM
+featurecounts_threads: 8
+cutadapt_threads: 4
+
+# 7. Strandedness (시퀀싱 프로토콜 확인 필요)
+strandedness: 0  # 0=unstranded, 1=forward, 2=reverse
+```
+
+### Step 3: 샘플 정보 기록 (선택, 문서화용)
+
+```bash
+# 샘플 정보를 TSV 파일로 기록 (파이프라인 실행에는 불필요하지만 문서화에 유용)
+cp config/samples/template.tsv config/samples/MY_PROJECT.tsv
+# 에디터로 샘플 정보 작성
+```
+
+> **중요:** 파이프라인은 FASTQ 파일명에서 자동으로 샘플 리스트를 추출하므로, 
+> 샘플 시트는 문서화 목적으로만 사용됩니다.
+
+### Step 4: FASTQ 파일 준비
+
+파이프라인은 다양한 FASTQ 파일명 패턴을 자동 인식합니다:
+
+#### 지원되는 파일명 패턴
+
+```bash
+# Pattern 1 (기본)
+{sample}_1.fastq.gz / {sample}_2.fastq.gz
+
+# Pattern 2 (일반적)
+{sample}_R1.fastq.gz / {sample}_R2.fastq.gz
+
+# Pattern 3 (Illumina)
+{sample}_R1_001.fastq.gz / {sample}_R2_001.fastq.gz
+
+# Pattern 4
+{sample}.1.fastq.gz / {sample}.2.fastq.gz
+
+# Pattern 5 (단축형)
+{sample}_1.fq.gz / {sample}_2.fq.gz
+{sample}_R1.fq.gz / {sample}_R2.fq.gz
+```
+
+#### 파일명 예시
+
+```bash
+# ✅ 올바른 예시 (자동 인식됨)
+Control_1_1.fastq.gz, Control_1_2.fastq.gz
+Treatment_R1.fastq.gz, Treatment_R2.fastq.gz
+Sample01_R1_001.fastq.gz, Sample01_R2_001.fastq.gz
+
+# ❌ 잘못된 예시 (인식 안 됨)
+sample.fa.gz  # .fastq.gz 또는 .fq.gz 사용 필요
+sample_R1.fasta.gz  # .fastq.gz 또는 .fq.gz 사용 필요
+sample_forward.fastq.gz  # _1, _2 또는 _R1, _R2 규칙 필요
+```
+
+> **중요:** 
+> - 확장자는 반드시 `.fastq.gz` 또는 `.fq.gz`여야 합니다.
+> - Read 1과 Read 2 파일은 숫자만 다르고 나머지는 동일해야 합니다.
+> - 파이프라인은 첫 번째 매칭되는 패턴을 자동 감지하여 사용합니다.
+
+#### 패턴 감지 확인
+
+Dry-run 실행 시 감지된 패턴이 출력됩니다:
+
+```bash
+# 출력 예시:
+#   Detected FASTQ Pattern: {sample}_R1.fastq.gz
+#   Found 15 samples
+```
+
+### Step 5: 설정 검증 (Dry-run)
+
+```bash
+# 파이프라인이 올바르게 설정되었는지 확인
+snakemake --configfile config/projects/config_MY_PROJECT.yaml \
+  --config use_standard_structure=true \
+  --dry-run --cores 1
+
+# 출력 예시:
+# ================================================================================
+# PIPELINE CONFIGURATION:
+#   Project ID: MY_PROJECT_2025
+#   Found 15 samples
+#   Sample list: ['sample1', 'sample2', ...]
+# ================================================================================
+# Job stats: ... (총 작업 수 표시)
+```
+
+### Step 6: 파이프라인 실행
+
+```bash
+# 실제 실행
+snakemake --configfile config/projects/config_MY_PROJECT.yaml \
+  --config use_standard_structure=true \
+  --cores 8
+```
+
+---
+
 ## 🚀 사용 방법
 
 ### 1. Conda 환경 설정

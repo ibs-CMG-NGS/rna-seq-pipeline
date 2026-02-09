@@ -48,6 +48,21 @@ def get_metadata_dir(sample_id):
     else:
         return config.get("results_dir", "results")
 
+# FASTQ 파일 경로 헬퍼 함수 (다양한 파일명 패턴 지원)
+def get_raw_fastq_r1(wildcards):
+    """원본 FASTQ Read 1 경로 반환"""
+    sample = wildcards.sample
+    # DETECTED_PATTERN에 따라 적절한 파일명 생성
+    return f"{RAW_DATA_DIR}/" + DETECTED_PATTERN.replace("{sample}", sample).replace("_1.", "_1.").replace("_R1", "_R1").replace(".1.", ".1.")
+
+def get_raw_fastq_r2(wildcards):
+    """원본 FASTQ Read 2 경로 반환"""
+    sample = wildcards.sample
+    r1_path = f"{RAW_DATA_DIR}/" + DETECTED_PATTERN.replace("{sample}", sample)
+    # R1을 R2로 변환
+    r2_path = r1_path.replace("_1.fastq", "_2.fastq").replace("_R1.", "_R2.").replace("_R1_001.", "_R2_001.").replace(".1.fastq", ".2.fastq").replace("_1.fq", "_2.fq").replace("_R1.fq", "_R2.fq")
+    return r2_path
+
 # Legacy 구조 경로 (USE_STANDARD=False인 경우)
 if not USE_STANDARD:
     RESULTS_DIR = config.get("results_dir", "results")
@@ -74,8 +89,50 @@ else:
     TRIMMED_DIR = f"{PROJECT_DIR}/intermediate/trimmed"  # 사용하지 않음
     ALIGNED_DIR = f"{PROJECT_DIR}/intermediate/aligned"  # 사용하지 않음
 
-# 샘플 이름 정의
-SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}_1.fastq.gz")
+# 샘플 이름 정의 - 다양한 FASTQ 파일명 패턴 지원
+# 여러 패턴을 순차적으로 시도하여 샘플 자동 인식
+SAMPLES = []
+FASTQ_PATTERNS = [
+    "*_1.fastq.gz",      # sample_1.fastq.gz (기본)
+    "*_R1.fastq.gz",     # sample_R1.fastq.gz
+    "*_R1_001.fastq.gz", # sample_R1_001.fastq.gz (Illumina)
+    "*.1.fastq.gz",      # sample.1.fastq.gz
+    "*_1.fq.gz",         # sample_1.fq.gz
+    "*_R1.fq.gz",        # sample_R1.fq.gz
+]
+
+import glob
+
+for pattern in FASTQ_PATTERNS:
+    files = glob.glob(f"{RAW_DATA_DIR}/{pattern}")
+    if files:
+        # 첫 번째 매칭되는 패턴 사용
+        if "_1.fastq.gz" in pattern:
+            SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}_1.fastq.gz")
+        elif "_R1.fastq.gz" in pattern:
+            SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}_R1.fastq.gz")
+        elif "_R1_001.fastq.gz" in pattern:
+            SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}_R1_001.fastq.gz")
+        elif ".1.fastq.gz" in pattern:
+            SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}.1.fastq.gz")
+        elif "_1.fq.gz" in pattern:
+            SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}_1.fq.gz")
+        elif "_R1.fq.gz" in pattern:
+            SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}_R1.fq.gz")
+        
+        # 사용된 패턴 저장
+        DETECTED_PATTERN = pattern.replace("*", "{sample}")
+        break
+
+if not SAMPLES:
+    raise ValueError(
+        f"No FASTQ files found in {RAW_DATA_DIR}\n"
+        f"Supported patterns: {', '.join(FASTQ_PATTERNS)}\n"
+        f"Please check:\n"
+        f"  1. data_dir path in config file\n"
+        f"  2. FASTQ file naming convention\n"
+        f"  3. File extensions (.fastq.gz or .fq.gz)"
+    )
 
 # 로그 디렉토리 자동 생성
 os.makedirs(f"{LOGS_DIR}/fastqc", exist_ok=True)
@@ -95,6 +152,7 @@ else:
     print(f"  Legacy Mode - Results Dir: {RESULTS_DIR}")
 print(f"  Data Dir: {RAW_DATA_DIR}")
 print(f"  Logs Dir: {LOGS_DIR}")
+print(f"  Detected FASTQ Pattern: {DETECTED_PATTERN}")
 print(f"  Found {len(SAMPLES)} samples")
 if SAMPLES:
     print(f"  Sample list: {SAMPLES[:5]}{'...' if len(SAMPLES) > 5 else ''}")
@@ -198,8 +256,8 @@ rule evaluate_fastqc_raw:
 # --- 4. 어댑터 제거 (cutadapt) 규칙 ---
 rule cutadapt:
     input:
-        r1=f"{RAW_DATA_DIR}/{{sample}}_1.fastq.gz",
-        r2=f"{RAW_DATA_DIR}/{{sample}}_2.fastq.gz"
+        r1=get_raw_fastq_r1,
+        r2=get_raw_fastq_r2
     output:
         r1=f"{TRIMMED_DIR}/{{sample}}_1.fastq.gz",
         r2=f"{TRIMMED_DIR}/{{sample}}_2.fastq.gz"
