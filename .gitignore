@@ -21,8 +21,9 @@ genome/*
 # Ignore actual sample sheet (keep template only)
 samples.tsv
 
-# Ignore project-specific config files (keep template only)
+# Ignore project-specific config files (keep config.yaml template only)
 config_*.yaml
+config/projects/config_*.yaml
 
 # Ignore conda environments created in the project
 .conda/
@@ -44,4 +45,3 @@ benchmarks/
 # genome/*.fa
 # genome/*.fa.fai
 workflow.pdf
-config_H2O2_astrocyte.yaml

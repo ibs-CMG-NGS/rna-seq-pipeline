@@ -1,9 +1,9 @@
 # Snakefile
 
 # --- 설정 파일 로드 ---
-# 기본값: config/default.yaml, 실행 시 --configfile 옵션으로 오버라이드 가능
-# 예: snakemake --configfile config/projects/H2O2_human_2025.yaml -j 12
-configfile: "config/default.yaml"
+# 기본값: config/config.yaml, 실행 시 --configfile 옵션으로 오버라이드 가능
+# 예: snakemake --configfile config/projects/config_H2O2_human.yaml --cores 8
+configfile: "config/config.yaml"
 
 # --- 1. 전역 변수 설정 ---
 import os
