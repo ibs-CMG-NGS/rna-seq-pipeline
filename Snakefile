@@ -63,6 +63,18 @@ def get_raw_fastq_r2(wildcards):
     r2_path = r1_path.replace("_1.fastq", "_2.fastq").replace("_R1.", "_R2.").replace("_R1_001.", "_R2_001.").replace(".1.fastq", ".2.fastq").replace("_1.fq", "_2.fq").replace("_R1.fq", "_R2.fq")
     return r2_path
 
+def get_raw_fastq_by_read(wildcards):
+    """FastQC용: read 번호에 따라 R1 또는 R2 경로 반환"""
+    sample = wildcards.sample
+    read = wildcards.read
+    r1_path = f"{RAW_DATA_DIR}/" + DETECTED_PATTERN.replace("{sample}", sample)
+    
+    if read == "1":
+        return r1_path
+    else:  # read == "2"
+        r2_path = r1_path.replace("_1.fastq", "_2.fastq").replace("_R1.", "_R2.").replace("_R1_001.", "_R2_001.").replace(".1.fastq", ".2.fastq").replace("_1.fq", "_2.fq").replace("_R1.fq", "_R2.fq")
+        return r2_path
+
 # Legacy 구조 경로 (USE_STANDARD=False인 경우)
 if not USE_STANDARD:
     RESULTS_DIR = config.get("results_dir", "results")
@@ -221,7 +233,7 @@ rule all:
 
 rule fastqc_raw:
     input:
-        f"{RAW_DATA_DIR}/{{sample}}_{{read}}.fastq.gz"
+        get_raw_fastq_by_read
     output:
         html=f"{QC_DIR}/{{sample}}_{{read}}_fastqc.html",
         zip=f"{QC_DIR}/{{sample}}_{{read}}_fastqc.zip"
