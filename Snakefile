@@ -68,6 +68,11 @@ else:
     COUNTS_DIR = f"{PROJECT_SUMMARY_DIR}/counts"
     QC_DIR = f"{PROJECT_SUMMARY_DIR}/qc"
     LOGS_DIR = f"{PROJECT_DIR}/logs"
+    
+    # 표준 구조에서도 legacy 규칙 호환성을 위한 임시 경로
+    # (실제로는 샘플별 디렉토리를 사용하지만, expand 등에서 필요)
+    TRIMMED_DIR = f"{PROJECT_DIR}/intermediate/trimmed"  # 사용하지 않음
+    ALIGNED_DIR = f"{PROJECT_DIR}/intermediate/aligned"  # 사용하지 않음
 
 # 샘플 이름 정의
 SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}_1.fastq.gz")
@@ -196,10 +201,22 @@ rule cutadapt:
         r1=f"{RAW_DATA_DIR}/{{sample}}_1.fastq.gz",
         r2=f"{RAW_DATA_DIR}/{{sample}}_2.fastq.gz"
     output:
-        r1=f"{TRIMMED_DIR}/{{sample}}_1.fastq.gz",
-        r2=f"{TRIMMED_DIR}/{{sample}}_2.fastq.gz"
+        r1=lambda wildcards: (
+            f"{get_intermediate_dir(wildcards.sample)}/trimmed/{{sample}}_1.fastq.gz"
+            if USE_STANDARD else
+            f"{TRIMMED_DIR}/{{sample}}_1.fastq.gz"
+        ),
+        r2=lambda wildcards: (
+            f"{get_intermediate_dir(wildcards.sample)}/trimmed/{{sample}}_2.fastq.gz"
+            if USE_STANDARD else
+            f"{TRIMMED_DIR}/{{sample}}_2.fastq.gz"
+        )
     log:
-        f"{LOGS_DIR}/cutadapt/{{sample}}.log"
+        lambda wildcards: (
+            f"{get_intermediate_dir(wildcards.sample)}/logs/cutadapt.log"
+            if USE_STANDARD else
+            f"{LOGS_DIR}/cutadapt/{{sample}}.log"
+        )
     threads: config.get("cutadapt_threads", 4)
     shell:
         """
@@ -215,26 +232,40 @@ rule cutadapt:
 # --- 5. STAR 정렬 규칙 ---
 rule star_align:
     input:
-        r1=f"{TRIMMED_DIR}/{{sample}}_1.fastq.gz",
-        r2=f"{TRIMMED_DIR}/{{sample}}_2.fastq.gz"
+        r1=lambda wildcards: (
+            f"{get_intermediate_dir(wildcards.sample)}/trimmed/{{sample}}_1.fastq.gz"
+            if USE_STANDARD else
+            f"{TRIMMED_DIR}/{{sample}}_1.fastq.gz"
+        ),
+        r2=lambda wildcards: (
+            f"{get_intermediate_dir(wildcards.sample)}/trimmed/{{sample}}_2.fastq.gz"
+            if USE_STANDARD else
+            f"{TRIMMED_DIR}/{{sample}}_2.fastq.gz"
+        )
     output:
         bam=f"{ALIGNED_DIR}/{{sample}}/Aligned.sortedByCoord.out.bam",
         log_final=f"{ALIGNED_DIR}/{{sample}}/Log.final.out"
     log:
-        f"{LOGS_DIR}/star/{{sample}}.log"
+        lambda wildcards: (
+            f"{get_intermediate_dir(wildcards.sample)}/logs/star.log"
+            if USE_STANDARD else
+            f"{LOGS_DIR}/star/{{sample}}.log"
+        )
     threads: config["star_threads"]
     resources:
         mem_gb=config.get("star_memory_gb", 35)  # Memory limit per STAR job (GB)
+    params:
+        out_prefix=lambda wildcards: f"{ALIGNED_DIR}/{wildcards.sample}/"
     shell:
-        f"""
-        STAR --runThreadN {{threads}} \
+        """
+        STAR --runThreadN {threads} \
              --genomeDir {STAR_INDEX} \
-             --readFilesIn {{input.r1}} {{input.r2}} \
+             --readFilesIn {input.r1} {input.r2} \
              --readFilesCommand zcat \
-             --outFileNamePrefix {ALIGNED_DIR}/{{wildcards.sample}}/ \
+             --outFileNamePrefix {params.out_prefix} \
              --outSAMtype BAM SortedByCoordinate \
-             --limitBAMsortRAM {{config[star_sort_memory_bytes]}} \
-             --outBAMsortingThreadN {{threads}} > {{log}} 2>&1
+             --limitBAMsortRAM {config[star_sort_memory_bytes]} \
+             --outBAMsortingThreadN {threads} > {log} 2>&1
         """
 
 # --- 6. 유전자 발현량 계산 (featureCounts) 규칙 ---
