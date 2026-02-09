@@ -104,23 +104,56 @@ ANNOTATION_GTF = config["annotation_gtf"]
 
 # --- 2. 파이프라인의 최종 목표 정의 (Rule all) ---
 # QC 리포트 생성 여부에 따라 최종 목표 설정
+def get_all_targets():
+    """파이프라인 최종 목표 파일 목록 반환"""
+    if USE_STANDARD:
+        # 표준 구조: 샘플별 manifest + 프로젝트 요약
+        targets = []
+        for sample in SAMPLES:
+            # 각 샘플의 manifest
+            targets.append(f"{get_final_outputs_dir(sample)}/manifest.json")
+        
+        # 프로젝트 전체 요약
+        targets.append(f"{COUNTS_DIR}/counts_matrix.txt")
+        targets.append(f"{COUNTS_DIR}/counts_matrix_clean.csv")
+        
+        if config.get("generate_multiqc", True):
+            targets.append(f"{RESULTS_DIR}/multiqc_report.html")
+        
+        return targets
+    else:
+        # Legacy 구조
+        targets = []
+        # Raw FastQC
+        targets.extend(expand(f"{QC_DIR}/{{sample}}_{{read}}_fastqc.html", sample=SAMPLES, read=[1, 2]))
+        
+        # FastQC auto-evaluation
+        if config.get('fastqc_evaluation', {}).get('enabled', True):
+            targets.append(f"{QC_DIR}/{config.get('fastqc_evaluation', {}).get('evaluation_report', 'fastqc_evaluation.txt')}")
+        
+        # Trimmed reads
+        targets.extend(expand(f"{TRIMMED_DIR}/{{sample}}_{{read}}.fastq.gz", sample=SAMPLES, read=[1, 2]))
+        
+        # Aligned BAM files
+        targets.extend(expand(f"{ALIGNED_DIR}/{{sample}}/Aligned.sortedByCoord.out.bam", sample=SAMPLES))
+        
+        # Count matrices
+        targets.append(f"{COUNTS_DIR}/counts_matrix.txt")
+        targets.append(f"{COUNTS_DIR}/counts_matrix_clean.csv")
+        
+        # MultiQC report
+        if config.get("generate_multiqc", True):
+            targets.append(f"{RESULTS_DIR}/multiqc_report.html")
+        
+        # QC report
+        if config.get("generate_qc_report", True):
+            targets.append(f"{RESULTS_DIR}/{config.get('qc_report_filename', 'qc_report.html')}")
+        
+        return targets
+
 rule all:
     input:
-        # Raw FastQC
-        expand(f"{QC_DIR}/{{sample}}_{{read}}_fastqc.html", sample=SAMPLES, read=[1, 2]),
-        # FastQC auto-evaluation (raw data)
-        f"{QC_DIR}/{config.get('fastqc_evaluation', {}).get('evaluation_report', 'fastqc_evaluation.txt')}" if config.get('fastqc_evaluation', {}).get('enabled', True) else [],
-        # Trimmed reads
-        expand(f"{TRIMMED_DIR}/{{sample}}_{{read}}.fastq.gz", sample=SAMPLES, read=[1, 2]),
-        # Aligned BAM files
-        expand(f"{ALIGNED_DIR}/{{sample}}/Aligned.sortedByCoord.out.bam", sample=SAMPLES),
-        # Count matrices
-        f"{COUNTS_DIR}/counts_matrix.txt",
-        f"{COUNTS_DIR}/counts_matrix_clean.csv",
-        # MultiQC report
-        f"{RESULTS_DIR}/multiqc_report.html" if config.get("generate_multiqc", True) else [],
-        # QC report
-        f"{RESULTS_DIR}/{config.get('qc_report_filename', 'qc_report.html')}" if config.get("generate_qc_report", True) else []
+        get_all_targets()
 
 
 rule fastqc_raw:
@@ -288,3 +321,112 @@ rule generate_qc_report:
         f"{LOGS_DIR}/qc_report.log"
     script:
         "src/generate_qc_report.py"
+
+
+# ========================================================================
+# Phase 3: Standard Structure Rules
+# ========================================================================
+
+# --- 9. BAM Index 생성 (samtools index) ---
+rule index_bam:
+    input:
+        bam=lambda wildcards: (
+            f"{get_final_outputs_dir(wildcards.sample)}/bam/aligned.sorted.bam"
+            if USE_STANDARD else
+            f"{ALIGNED_DIR}/{wildcards.sample}/Aligned.sortedByCoord.out.bam"
+        )
+    output:
+        bai=lambda wildcards: (
+            f"{get_final_outputs_dir(wildcards.sample)}/bam/aligned.sorted.bam.bai"
+            if USE_STANDARD else
+            f"{ALIGNED_DIR}/{wildcards.sample}/Aligned.sortedByCoord.out.bam.bai"
+        )
+    log:
+        lambda wildcards: (
+            f"{get_intermediate_dir(wildcards.sample)}/logs/samtools_index.log"
+            if USE_STANDARD else
+            f"{LOGS_DIR}/samtools/{wildcards.sample}_index.log"
+        )
+    conda:
+        "environment.yaml"
+    shell:
+        """
+        samtools index {input.bam} > {log} 2>&1
+        """
+
+
+# --- 10. QC Summary 생성 (표준 구조 전용) ---
+rule generate_qc_summary:
+    input:
+        star_log=lambda wildcards: (
+            f"{get_intermediate_dir(wildcards.sample)}/logs/star_final.log"
+            if USE_STANDARD else
+            f"{ALIGNED_DIR}/{{wildcards.sample}}/Log.final.out"
+        ),
+        fc_summary=f"{COUNTS_DIR}/counts_matrix.txt.summary",
+        # 표준 구조에서는 BAM 복사를 기다림
+        bam=lambda wildcards: (
+            f"{get_final_outputs_dir(wildcards.sample)}/bam/aligned.sorted.bam"
+            if USE_STANDARD else []
+        )
+    output:
+        qc_json=lambda wildcards: f"{get_final_outputs_dir(wildcards.sample)}/qc/qc_summary.json"
+    params:
+        sample_id="{sample}"
+    log:
+        lambda wildcards: f"{get_intermediate_dir(wildcards.sample)}/logs/qc_summary.log"
+    conda:
+        "environment.yaml"
+    shell:
+        """
+        python3 scripts/generate_qc_summary.py \
+            --sample-id {params.sample_id} \
+            --star-log {input.star_log} \
+            --featurecounts {input.fc_summary} \
+            -o {output.qc_json} > {log} 2>&1
+        """
+
+
+# --- 11. Manifest 생성 (표준 구조 전용) ---
+rule generate_manifest:
+    input:
+        bam=lambda wildcards: f"{get_final_outputs_dir(wildcards.sample)}/bam/aligned.sorted.bam",
+        bai=lambda wildcards: f"{get_final_outputs_dir(wildcards.sample)}/bam/aligned.sorted.bam.bai",
+        qc_summary=lambda wildcards: f"{get_final_outputs_dir(wildcards.sample)}/qc/qc_summary.json"
+    output:
+        manifest=lambda wildcards: f"{get_final_outputs_dir(wildcards.sample)}/manifest.json"
+    params:
+        sample_id="{sample}",
+        sample_dir=lambda wildcards: get_sample_dir(wildcards.sample),
+        project_id=PROJECT_ID,
+        pipeline_type=PIPELINE_TYPE
+    log:
+        lambda wildcards: f"{get_intermediate_dir(wildcards.sample)}/logs/manifest.log"
+    conda:
+        "environment.yaml"
+    shell:
+        """
+        python3 scripts/generate_manifest.py \
+            --sample-dir {params.sample_dir} \
+            --sample-id {params.sample_id} \
+            --project-id {params.project_id} \
+            --pipeline-type {params.pipeline_type} > {log} 2>&1
+        """
+
+
+# --- 12. 표준 구조로 BAM 복사 (star_align 후처리) ---
+if USE_STANDARD:
+    rule copy_bam_to_standard:
+        input:
+            bam=f"{ALIGNED_DIR}/{{sample}}/Aligned.sortedByCoord.out.bam",
+            log_final=f"{ALIGNED_DIR}/{{sample}}/Log.final.out"
+        output:
+            bam=lambda wildcards: f"{get_final_outputs_dir(wildcards.sample)}/bam/aligned.sorted.bam",
+            log_final=lambda wildcards: f"{get_intermediate_dir(wildcards.sample)}/logs/star_final.log"
+        log:
+            lambda wildcards: f"{get_intermediate_dir(wildcards.sample)}/logs/copy_bam.log"
+        shell:
+            """
+            cp {input.bam} {output.bam} > {log} 2>&1
+            cp {input.log_final} {output.log_final} >> {log} 2>&1
+            """
