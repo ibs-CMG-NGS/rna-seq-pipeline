@@ -116,7 +116,7 @@ def get_all_targets():
         targets = []
         for sample in SAMPLES:
             # 각 샘플의 manifest
-            targets.append(f"{get_final_outputs_dir(sample)}/manifest.json")
+            targets.append(f"{PROJECT_DIR}/{sample}/rna-seq/final_outputs/manifest.json")
         
         # 프로젝트 전체 요약
         targets.append(f"{COUNTS_DIR}/counts_matrix.txt")
@@ -201,22 +201,10 @@ rule cutadapt:
         r1=f"{RAW_DATA_DIR}/{{sample}}_1.fastq.gz",
         r2=f"{RAW_DATA_DIR}/{{sample}}_2.fastq.gz"
     output:
-        r1=lambda wildcards: (
-            f"{get_intermediate_dir(wildcards.sample)}/trimmed/{{sample}}_1.fastq.gz"
-            if USE_STANDARD else
-            f"{TRIMMED_DIR}/{{sample}}_1.fastq.gz"
-        ),
-        r2=lambda wildcards: (
-            f"{get_intermediate_dir(wildcards.sample)}/trimmed/{{sample}}_2.fastq.gz"
-            if USE_STANDARD else
-            f"{TRIMMED_DIR}/{{sample}}_2.fastq.gz"
-        )
+        r1=f"{TRIMMED_DIR}/{{sample}}_1.fastq.gz",
+        r2=f"{TRIMMED_DIR}/{{sample}}_2.fastq.gz"
     log:
-        lambda wildcards: (
-            f"{get_intermediate_dir(wildcards.sample)}/logs/cutadapt.log"
-            if USE_STANDARD else
-            f"{LOGS_DIR}/cutadapt/{{sample}}.log"
-        )
+        f"{LOGS_DIR}/cutadapt/{{sample}}.log"
     threads: config.get("cutadapt_threads", 4)
     shell:
         """
@@ -232,25 +220,13 @@ rule cutadapt:
 # --- 5. STAR 정렬 규칙 ---
 rule star_align:
     input:
-        r1=lambda wildcards: (
-            f"{get_intermediate_dir(wildcards.sample)}/trimmed/{{sample}}_1.fastq.gz"
-            if USE_STANDARD else
-            f"{TRIMMED_DIR}/{{sample}}_1.fastq.gz"
-        ),
-        r2=lambda wildcards: (
-            f"{get_intermediate_dir(wildcards.sample)}/trimmed/{{sample}}_2.fastq.gz"
-            if USE_STANDARD else
-            f"{TRIMMED_DIR}/{{sample}}_2.fastq.gz"
-        )
+        r1=f"{TRIMMED_DIR}/{{sample}}_1.fastq.gz",
+        r2=f"{TRIMMED_DIR}/{{sample}}_2.fastq.gz"
     output:
         bam=f"{ALIGNED_DIR}/{{sample}}/Aligned.sortedByCoord.out.bam",
         log_final=f"{ALIGNED_DIR}/{{sample}}/Log.final.out"
     log:
-        lambda wildcards: (
-            f"{get_intermediate_dir(wildcards.sample)}/logs/star.log"
-            if USE_STANDARD else
-            f"{LOGS_DIR}/star/{{sample}}.log"
-        )
+        f"{LOGS_DIR}/star/{{sample}}.log"
     threads: config["star_threads"]
     resources:
         mem_gb=config.get("star_memory_gb", 35)  # Memory limit per STAR job (GB)
@@ -361,23 +337,11 @@ rule generate_qc_report:
 # --- 9. BAM Index 생성 (samtools index) ---
 rule index_bam:
     input:
-        bam=lambda wildcards: (
-            f"{get_final_outputs_dir(wildcards.sample)}/bam/aligned.sorted.bam"
-            if USE_STANDARD else
-            f"{ALIGNED_DIR}/{wildcards.sample}/Aligned.sortedByCoord.out.bam"
-        )
+        bam=f"{PROJECT_DIR}/{{sample}}/rna-seq/final_outputs/bam/aligned.sorted.bam" if USE_STANDARD else f"{ALIGNED_DIR}/{{sample}}/Aligned.sortedByCoord.out.bam"
     output:
-        bai=lambda wildcards: (
-            f"{get_final_outputs_dir(wildcards.sample)}/bam/aligned.sorted.bam.bai"
-            if USE_STANDARD else
-            f"{ALIGNED_DIR}/{wildcards.sample}/Aligned.sortedByCoord.out.bam.bai"
-        )
+        bai=f"{PROJECT_DIR}/{{sample}}/rna-seq/final_outputs/bam/aligned.sorted.bam.bai" if USE_STANDARD else f"{ALIGNED_DIR}/{{sample}}/Aligned.sortedByCoord.out.bam.bai"
     log:
-        lambda wildcards: (
-            f"{get_intermediate_dir(wildcards.sample)}/logs/samtools_index.log"
-            if USE_STANDARD else
-            f"{LOGS_DIR}/samtools/{wildcards.sample}_index.log"
-        )
+        f"{PROJECT_DIR}/{{sample}}/rna-seq/intermediate/logs/samtools_index.log" if USE_STANDARD else f"{LOGS_DIR}/samtools/{{sample}}_index.log"
     conda:
         "environment.yaml"
     shell:
@@ -389,27 +353,22 @@ rule index_bam:
 # --- 10. QC Summary 생성 (표준 구조 전용) ---
 rule generate_qc_summary:
     input:
-        star_log=lambda wildcards: (
-            f"{get_intermediate_dir(wildcards.sample)}/logs/star_final.log"
-            if USE_STANDARD else
-            f"{ALIGNED_DIR}/{{wildcards.sample}}/Log.final.out"
-        ),
+        star_log=f"{PROJECT_DIR}/{{sample}}/rna-seq/intermediate/logs/star_final.log" if USE_STANDARD else f"{ALIGNED_DIR}/{{sample}}/Log.final.out",
         fc_summary=f"{COUNTS_DIR}/counts_matrix.txt.summary",
         # 표준 구조에서는 BAM 복사를 기다림
-        bam=lambda wildcards: (
-            f"{get_final_outputs_dir(wildcards.sample)}/bam/aligned.sorted.bam"
-            if USE_STANDARD else []
-        )
+        bam=f"{PROJECT_DIR}/{{sample}}/rna-seq/final_outputs/bam/aligned.sorted.bam" if USE_STANDARD else []
     output:
-        qc_json=lambda wildcards: f"{get_final_outputs_dir(wildcards.sample)}/qc/qc_summary.json"
+        qc_json=f"{PROJECT_DIR}/{{sample}}/rna-seq/final_outputs/qc/qc_summary.json" if USE_STANDARD else f"{QC_DIR}/{{sample}}_qc_summary.json"
     params:
         sample_id="{sample}"
     log:
-        lambda wildcards: f"{get_intermediate_dir(wildcards.sample)}/logs/qc_summary.log"
+        f"{PROJECT_DIR}/{{sample}}/rna-seq/intermediate/logs/qc_summary.log" if USE_STANDARD else f"{LOGS_DIR}/qc/{{sample}}_summary.log"
     conda:
         "environment.yaml"
     shell:
         """
+        mkdir -p $(dirname {output.qc_json})
+        mkdir -p $(dirname {log})
         python3 scripts/generate_qc_summary.py \
             --sample-id {params.sample_id} \
             --star-log {input.star_log} \
@@ -421,22 +380,24 @@ rule generate_qc_summary:
 # --- 11. Manifest 생성 (표준 구조 전용) ---
 rule generate_manifest:
     input:
-        bam=lambda wildcards: f"{get_final_outputs_dir(wildcards.sample)}/bam/aligned.sorted.bam",
-        bai=lambda wildcards: f"{get_final_outputs_dir(wildcards.sample)}/bam/aligned.sorted.bam.bai",
-        qc_summary=lambda wildcards: f"{get_final_outputs_dir(wildcards.sample)}/qc/qc_summary.json"
+        bam=f"{PROJECT_DIR}/{{sample}}/rna-seq/final_outputs/bam/aligned.sorted.bam" if USE_STANDARD else f"{ALIGNED_DIR}/{{sample}}/Aligned.sortedByCoord.out.bam",
+        bai=f"{PROJECT_DIR}/{{sample}}/rna-seq/final_outputs/bam/aligned.sorted.bam.bai" if USE_STANDARD else f"{ALIGNED_DIR}/{{sample}}/Aligned.sortedByCoord.out.bam.bai",
+        qc_summary=f"{PROJECT_DIR}/{{sample}}/rna-seq/final_outputs/qc/qc_summary.json" if USE_STANDARD else f"{QC_DIR}/{{sample}}_qc_summary.json"
     output:
-        manifest=lambda wildcards: f"{get_final_outputs_dir(wildcards.sample)}/manifest.json"
+        manifest=f"{PROJECT_DIR}/{{sample}}/rna-seq/final_outputs/manifest.json" if USE_STANDARD else f"{RESULTS_DIR}/{{sample}}_manifest.json"
     params:
         sample_id="{sample}",
-        sample_dir=lambda wildcards: get_sample_dir(wildcards.sample),
+        sample_dir=f"{PROJECT_DIR}/{{sample}}/rna-seq" if USE_STANDARD else RESULTS_DIR,
         project_id=PROJECT_ID,
         pipeline_type=PIPELINE_TYPE
     log:
-        lambda wildcards: f"{get_intermediate_dir(wildcards.sample)}/logs/manifest.log"
+        f"{PROJECT_DIR}/{{sample}}/rna-seq/intermediate/logs/manifest.log" if USE_STANDARD else f"{LOGS_DIR}/manifest/{{sample}}.log"
     conda:
         "environment.yaml"
     shell:
         """
+        mkdir -p $(dirname {output.manifest})
+        mkdir -p $(dirname {log})
         python3 scripts/generate_manifest.py \
             --sample-dir {params.sample_dir} \
             --sample-id {params.sample_id} \
@@ -452,12 +413,15 @@ if USE_STANDARD:
             bam=f"{ALIGNED_DIR}/{{sample}}/Aligned.sortedByCoord.out.bam",
             log_final=f"{ALIGNED_DIR}/{{sample}}/Log.final.out"
         output:
-            bam=lambda wildcards: f"{get_final_outputs_dir(wildcards.sample)}/bam/aligned.sorted.bam",
-            log_final=lambda wildcards: f"{get_intermediate_dir(wildcards.sample)}/logs/star_final.log"
+            bam=temp(f"{PROJECT_DIR}/{{sample}}/rna-seq/final_outputs/bam/aligned.sorted.bam"),
+            log_final=temp(f"{PROJECT_DIR}/{{sample}}/rna-seq/intermediate/logs/star_final.log")
         log:
-            lambda wildcards: f"{get_intermediate_dir(wildcards.sample)}/logs/copy_bam.log"
+            f"{PROJECT_DIR}/{{sample}}/rna-seq/intermediate/logs/copy_bam.log"
         shell:
             """
+            mkdir -p $(dirname {output.bam})
+            mkdir -p $(dirname {output.log_final})
+            mkdir -p $(dirname {log})
             cp {input.bam} {output.bam} > {log} 2>&1
             cp {input.log_final} {output.log_final} >> {log} 2>&1
             """
