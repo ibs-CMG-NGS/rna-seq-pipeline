@@ -413,8 +413,8 @@ if USE_STANDARD:
             bam=f"{ALIGNED_DIR}/{{sample}}/Aligned.sortedByCoord.out.bam",
             log_final=f"{ALIGNED_DIR}/{{sample}}/Log.final.out"
         output:
-            bam=temp(f"{PROJECT_DIR}/{{sample}}/rna-seq/final_outputs/bam/aligned.sorted.bam"),
-            log_final=temp(f"{PROJECT_DIR}/{{sample}}/rna-seq/intermediate/logs/star_final.log")
+            bam=f"{PROJECT_DIR}/{{sample}}/rna-seq/final_outputs/bam/aligned.sorted.bam",
+            log_final=f"{PROJECT_DIR}/{{sample}}/rna-seq/intermediate/logs/star_final.log"
         log:
             f"{PROJECT_DIR}/{{sample}}/rna-seq/intermediate/logs/copy_bam.log"
         shell:
