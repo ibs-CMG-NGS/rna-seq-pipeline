@@ -6,42 +6,95 @@
 configfile: "config.yaml"
 
 # --- 1. 전역 변수 설정 ---
-# 경로 변수 구성
+import os
+
+# 입력 데이터 경로
 DATA_DIR = config.get("data_dir", "data")
 RAW_DATA_SUBDIR = config.get("raw_data_subdir", "raw")
-# raw_data_subdir가 비어있으면 DATA_DIR을 그대로 사용
 RAW_DATA_DIR = f"{DATA_DIR}/{RAW_DATA_SUBDIR}" if RAW_DATA_SUBDIR else DATA_DIR
 
-RESULTS_DIR = config.get("results_dir", "results")
-TRIMMED_DIR = f"{RESULTS_DIR}/{config.get('trimmed_subdir', 'trimmed')}"
-ALIGNED_DIR = f"{RESULTS_DIR}/{config.get('aligned_subdir', 'aligned')}"
-COUNTS_DIR = f"{RESULTS_DIR}/{config.get('counts_subdir', 'counts')}"
-QC_DIR = f"{RESULTS_DIR}/{config.get('qc_subdir', 'qc')}"
+# 표준 디렉토리 구조 사용 여부
+USE_STANDARD = config.get("use_standard_structure", False)
+PROJECT_ID = config.get("project_id", "default_project")
+PIPELINE_TYPE = config.get("pipeline_type", "rna-seq")
 
-LOGS_DIR = config.get("logs_dir", "logs")
+# 디렉토리 경로 함수
+def get_sample_dir(sample_id):
+    """샘플별 디렉토리 경로 반환"""
+    if USE_STANDARD:
+        base = config.get("base_results_dir", "/home/ngs/data/results")
+        return f"{base}/{PROJECT_ID}/{sample_id}/{PIPELINE_TYPE}"
+    else:
+        return config.get("results_dir", "results")
+
+def get_final_outputs_dir(sample_id):
+    """Final outputs 디렉토리 경로"""
+    if USE_STANDARD:
+        return f"{get_sample_dir(sample_id)}/final_outputs"
+    else:
+        return config.get("results_dir", "results")
+
+def get_intermediate_dir(sample_id):
+    """Intermediate 디렉토리 경로"""
+    if USE_STANDARD:
+        return f"{get_sample_dir(sample_id)}/intermediate"
+    else:
+        return config.get("results_dir", "results")
+
+def get_metadata_dir(sample_id):
+    """Metadata 디렉토리 경로"""
+    if USE_STANDARD:
+        return f"{get_sample_dir(sample_id)}/metadata"
+    else:
+        return config.get("results_dir", "results")
+
+# Legacy 구조 경로 (USE_STANDARD=False인 경우)
+if not USE_STANDARD:
+    RESULTS_DIR = config.get("results_dir", "results")
+    TRIMMED_DIR = f"{RESULTS_DIR}/{config.get('trimmed_subdir', 'trimmed')}"
+    ALIGNED_DIR = f"{RESULTS_DIR}/{config.get('aligned_subdir', 'aligned')}"
+    COUNTS_DIR = f"{RESULTS_DIR}/{config.get('counts_subdir', 'counts')}"
+    QC_DIR = f"{RESULTS_DIR}/{config.get('qc_subdir', 'qc')}"
+    LOGS_DIR = config.get("logs_dir", "logs")
+else:
+    # 표준 구조 경로
+    BASE_RESULTS = config.get("base_results_dir", "/home/ngs/data/results")
+    PROJECT_DIR = f"{BASE_RESULTS}/{PROJECT_ID}"
+    PROJECT_SUMMARY_DIR = f"{PROJECT_DIR}/project_summary"
+    METADATA_DIR = f"{PROJECT_DIR}/metadata"
+    
+    # 프로젝트 레벨 디렉토리는 샘플과 무관하게 생성
+    RESULTS_DIR = PROJECT_SUMMARY_DIR  # 프로젝트 전체 요약
+    COUNTS_DIR = f"{PROJECT_SUMMARY_DIR}/counts"
+    QC_DIR = f"{PROJECT_SUMMARY_DIR}/qc"
+    LOGS_DIR = f"{PROJECT_DIR}/logs"
 
 # 샘플 이름 정의
 SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}_1.fastq.gz")
 
-# 로그 디렉토리 자동 생성 (FastQC 등의 log 파일을 위해 필요)
-import os
+# 로그 디렉토리 자동 생성
 os.makedirs(f"{LOGS_DIR}/fastqc", exist_ok=True)
 os.makedirs(f"{LOGS_DIR}/cutadapt", exist_ok=True)
 os.makedirs(f"{LOGS_DIR}/star", exist_ok=True)
 
 # 디버깅: 경로 및 샘플 정보 출력
 print(f"=" * 80)
-print(f"DEBUG INFO:")
-print(f"  DATA_DIR: {DATA_DIR}")
-print(f"  RAW_DATA_DIR: {RAW_DATA_DIR}")
-print(f"  RESULTS_DIR: {RESULTS_DIR}")
-print(f"  LOGS_DIR: {LOGS_DIR}")
+print(f"PIPELINE CONFIGURATION:")
+print(f"  Standard Structure: {USE_STANDARD}")
+if USE_STANDARD:
+    print(f"  Project ID: {PROJECT_ID}")
+    print(f"  Pipeline Type: {PIPELINE_TYPE}")
+    print(f"  Base Results Dir: {BASE_RESULTS}")
+    print(f"  Project Dir: {PROJECT_DIR}")
+else:
+    print(f"  Legacy Mode - Results Dir: {RESULTS_DIR}")
+print(f"  Data Dir: {RAW_DATA_DIR}")
+print(f"  Logs Dir: {LOGS_DIR}")
 print(f"  Found {len(SAMPLES)} samples")
 if SAMPLES:
     print(f"  Sample list: {SAMPLES[:5]}{'...' if len(SAMPLES) > 5 else ''}")
 else:
     print(f"  WARNING: No samples found in {RAW_DATA_DIR}")
-    print(f"  Looking for pattern: {RAW_DATA_DIR}/*_1.fastq.gz")
 print(f"=" * 80)
 
 # 경로 변수 (config.yaml에서 로드)
