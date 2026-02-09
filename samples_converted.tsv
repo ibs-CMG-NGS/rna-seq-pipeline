@@ -1,0 +1,16 @@
+sample_id	condition	replicate	fastq_r1	fastq_r2	notes
+h_RNA_Cont_1	Control	1	/home/ngs/data/ygkim/2025/H2O2_human_mRNA/h_RNA_Cont_1_1.fastq.gz	/home/ngs/data/ygkim/2025/H2O2_human_mRNA/h_RNA_Cont_1_2.fastq.gz	Control replicate 1
+h_RNA_Cont_2	Control	2	/home/ngs/data/ygkim/2025/H2O2_human_mRNA/h_RNA_Cont_2_1.fastq.gz	/home/ngs/data/ygkim/2025/H2O2_human_mRNA/h_RNA_Cont_2_2.fastq.gz	Control replicate 2
+h_RNA_Cont_3	Control	3	/home/ngs/data/ygkim/2025/H2O2_human_mRNA/h_RNA_Cont_3_1.fastq.gz	/home/ngs/data/ygkim/2025/H2O2_human_mRNA/h_RNA_Cont_3_2.fastq.gz	Control replicate 3
+h_RNA_100_1	H2O2_100uM	1	/home/ngs/data/ygkim/2025/H2O2_human_mRNA/h_RNA_100_1_1.fastq.gz	/home/ngs/data/ygkim/2025/H2O2_human_mRNA/h_RNA_100_1_2.fastq.gz	100uM H2O2 treatment replicate 1
+h_RNA_100_2	H2O2_100uM	2	/home/ngs/data/ygkim/2025/H2O2_human_mRNA/h_RNA_100_2_1.fastq.gz	/home/ngs/data/ygkim/2025/H2O2_human_mRNA/h_RNA_100_2_2.fastq.gz	100uM H2O2 treatment replicate 2
+h_RNA_100_3	H2O2_100uM	3	/home/ngs/data/ygkim/2025/H2O2_human_mRNA/h_RNA_100_3_1.fastq.gz	/home/ngs/data/ygkim/2025/H2O2_human_mRNA/h_RNA_100_3_2.fastq.gz	100uM H2O2 treatment replicate 3
+h_RNA_200_1	H2O2_200uM	1	/home/ngs/data/ygkim/2025/H2O2_human_mRNA/h_RNA_200_1_1.fastq.gz	/home/ngs/data/ygkim/2025/H2O2_human_mRNA/h_RNA_200_1_2.fastq.gz	200uM H2O2 treatment replicate 1
+h_RNA_200_2	H2O2_200uM	2	/home/ngs/data/ygkim/2025/H2O2_human_mRNA/h_RNA_200_2_1.fastq.gz	/home/ngs/data/ygkim/2025/H2O2_human_mRNA/h_RNA_200_2_2.fastq.gz	200uM H2O2 treatment replicate 2
+h_RNA_200_3	H2O2_200uM	3	/home/ngs/data/ygkim/2025/H2O2_human_mRNA/h_RNA_200_3_1.fastq.gz	/home/ngs/data/ygkim/2025/H2O2_human_mRNA/h_RNA_200_3_2.fastq.gz	200uM H2O2 treatment replicate 3
+h_RNA_D1_1	Day1	1	/home/ngs/data/ygkim/2025/H2O2_human_mRNA/h_RNA_D1_1_1.fastq.gz	/home/ngs/data/ygkim/2025/H2O2_human_mRNA/h_RNA_D1_1_2.fastq.gz	Day 1 post-treatment replicate 1
+h_RNA_D1_2	Day1	2	/home/ngs/data/ygkim/2025/H2O2_human_mRNA/h_RNA_D1_2_1.fastq.gz	/home/ngs/data/ygkim/2025/H2O2_human_mRNA/h_RNA_D1_2_2.fastq.gz	Day 1 post-treatment replicate 2
+h_RNA_D1_3	Day1	3	/home/ngs/data/ygkim/2025/H2O2_human_mRNA/h_RNA_D1_3_1.fastq.gz	/home/ngs/data/ygkim/2025/H2O2_human_mRNA/h_RNA_D1_3_2.fastq.gz	Day 1 post-treatment replicate 3
+h_RNA_D3_1	Day3	1	/home/ngs/data/ygkim/2025/H2O2_human_mRNA/h_RNA_D3_1_1.fastq.gz	/home/ngs/data/ygkim/2025/H2O2_human_mRNA/h_RNA_D3_1_2.fastq.gz	Day 3 post-treatment replicate 1
+h_RNA_D3_2	Day3	2	/home/ngs/data/ygkim/2025/H2O2_human_mRNA/h_RNA_D3_2_1.fastq.gz	/home/ngs/data/ygkim/2025/H2O2_human_mRNA/h_RNA_D3_2_2.fastq.gz	Day 3 post-treatment replicate 2
+h_RNA_D3_3	Day3	3	/home/ngs/data/ygkim/2025/H2O2_human_mRNA/h_RNA_D3_3_1.fastq.gz	/home/ngs/data/ygkim/2025/H2O2_human_mRNA/h_RNA_D3_3_2.fastq.gz	Day 3 post-treatment replicate 3
