@@ -17,6 +17,20 @@
 data_dir: "/path/to/fastq/data"  # FASTQ 파일 위치 (절대경로 권장)
 raw_data_subdir: ""  # FASTQ 파일이 data_dir 바로 아래에 있으면 비워둠, 서브폴더면 지정
 
+# === Sample Sheet Configuration ===
+# 샘플 정보를 CSV 파일에서 읽기 (권장) 또는 FASTQ 파일명에서 자동 추출
+use_sample_sheet: false  # true: CSV에서 읽기, false: glob으로 자동 감지 (기본값)
+sample_sheet: "config/samples/master.csv"  # 샘플 시트 경로
+
+# use_sample_sheet: true 사용 시 장점:
+#   - 샘플 메타데이터 활용 (condition, replicate, tissue 등)
+#   - FASTQ 경로를 샘플 시트에서 직접 지정 가능
+#   - 프로젝트별 샘플 자동 필터링 (project_id 기준)
+#   - 조건별 분석 및 QC 그룹화 지원
+# use_sample_sheet: false 사용 시:
+#   - 빠른 테스트 및 간단한 분석
+#   - FASTQ 파일명 패턴 자동 감지 (6가지 지원)
+
 # === Standardized Output Structure ===
 # 표준 디렉토리 구조: {base_results_dir}/{project_id}/{sample_id}/{pipeline_type}/
 use_standard_structure: true  # 표준 디렉토리 구조 사용 여부 (권장: true)
