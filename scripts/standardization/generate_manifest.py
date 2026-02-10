@@ -15,22 +15,31 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional
 
+try:
+    import pandas as pd
+    HAS_PANDAS = True
+except ImportError:
+    HAS_PANDAS = False
+
 
 class ManifestGenerator:
     """Manifest 파일 생성기"""
     
-    def __init__(self, sample_dir: str, sample_id: str, project_id: str, pipeline_type: str = "rna-seq"):
+    def __init__(self, sample_dir: str, sample_id: str, project_id: str, pipeline_type: str = "rna-seq", 
+                 sample_metadata: Optional[Dict] = None):
         """
         Args:
             sample_dir: 샘플 디렉토리 경로
             sample_id: 샘플 ID
             project_id: 프로젝트 ID
             pipeline_type: 파이프라인 타입
+            sample_metadata: 샘플 메타데이터 (condition, replicate 등)
         """
         self.sample_dir = Path(sample_dir)
         self.sample_id = sample_id
         self.project_id = project_id
         self.pipeline_type = pipeline_type
+        self.sample_metadata = sample_metadata or {}
         
         self.final_outputs_dir = self.sample_dir / "final_outputs"
         self.intermediate_dir = self.sample_dir / "intermediate"
@@ -160,6 +169,32 @@ class ManifestGenerator:
         else:
             return ["review_outputs"]
     
+    def _extract_metadata(self) -> Dict:
+        """샘플 메타데이터 추출 및 정리"""
+        if not self.sample_metadata:
+            return {}
+        
+        # 관심 있는 메타데이터 필드만 추출
+        relevant_fields = [
+            'sample_name', 'condition', 'replicate', 'sequencing_platform',
+            'library_type', 'read_type', 'species', 'genome_build',
+            'batch', 'tissue', 'treatment', 'time_point', 'notes'
+        ]
+        
+        metadata = {}
+        for field in relevant_fields:
+            if field in self.sample_metadata and self.sample_metadata[field]:
+                value = self.sample_metadata[field]
+                # pandas가 있으면 NaN 체크, 없으면 None과 빈 문자열만 체크
+                if HAS_PANDAS:
+                    if pd.notna(value) and value != '':
+                        metadata[field] = value
+                else:
+                    if value is not None and value != '':
+                        metadata[field] = value
+        
+        return metadata
+    
     def generate_manifest(self, output_path: Optional[str] = None) -> Dict:
         """Manifest 생성"""
         # 최종 결과물 찾기
@@ -179,6 +214,9 @@ class ManifestGenerator:
             "pipeline_version": "1.0.0",  # TODO: 자동으로 가져오기
             "execution_date": datetime.now().isoformat(),
             "status": "completed" if final_outputs else "incomplete",
+            
+            # 샘플 메타데이터 추가
+            "sample_metadata": self._extract_metadata(),
             
             "final_outputs": final_outputs,
             
@@ -275,6 +313,10 @@ Examples:
         help='Pipeline type (default: rna-seq)'
     )
     parser.add_argument(
+        '--sample-metadata',
+        help='Sample metadata as JSON string (e.g., \'{"condition": "Control", "replicate": 1}\')'
+    )
+    parser.add_argument(
         '-o', '--output',
         help='Output manifest.json path (default: {sample_dir}/final_outputs/manifest.json)'
     )
@@ -322,11 +364,20 @@ Examples:
             if not all([args.sample_dir, args.sample_id, args.project_id]):
                 parser.error("--sample-dir, --sample-id, and --project-id are required for generation")
             
+            # Parse sample metadata if provided
+            sample_metadata = None
+            if args.sample_metadata:
+                try:
+                    sample_metadata = json.loads(args.sample_metadata)
+                except json.JSONDecodeError as e:
+                    parser.error(f"Invalid JSON in --sample-metadata: {e}")
+            
             generator = ManifestGenerator(
                 args.sample_dir,
                 args.sample_id,
                 args.project_id,
-                args.pipeline_type
+                args.pipeline_type,
+                sample_metadata
             )
             
             print(f"\n{'='*70}")

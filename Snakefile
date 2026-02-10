@@ -7,6 +7,7 @@ configfile: "config/config.yaml"
 
 # --- 1. 전역 변수 설정 ---
 import os
+import json
 
 # 입력 데이터 경로
 DATA_DIR = config.get("data_dir", "data")
@@ -521,7 +522,8 @@ rule generate_manifest:
         sample_id="{sample}",
         sample_dir=f"{PROJECT_DIR}/{{sample}}/rna-seq" if USE_STANDARD else RESULTS_DIR,
         project_id=PROJECT_ID,
-        pipeline_type=PIPELINE_TYPE
+        pipeline_type=PIPELINE_TYPE,
+        sample_metadata=lambda wildcards: json.dumps(SAMPLE_METADATA.get(wildcards.sample, {})) if USE_SAMPLE_SHEET else "{}"
     log:
         f"{PROJECT_DIR}/{{sample}}/rna-seq/intermediate/logs/manifest.log" if USE_STANDARD else f"{LOGS_DIR}/manifest/{{sample}}.log"
     conda:
@@ -534,7 +536,8 @@ rule generate_manifest:
             --sample-dir {params.sample_dir} \
             --sample-id {params.sample_id} \
             --project-id {params.project_id} \
-            --pipeline-type {params.pipeline_type} > {log} 2>&1
+            --pipeline-type {params.pipeline_type} \
+            --sample-metadata '{params.sample_metadata}' > {log} 2>&1
         """
 
 
