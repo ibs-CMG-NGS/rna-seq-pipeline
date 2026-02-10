@@ -101,50 +101,104 @@ else:
     TRIMMED_DIR = f"{PROJECT_DIR}/intermediate/trimmed"  # 사용하지 않음
     ALIGNED_DIR = f"{PROJECT_DIR}/intermediate/aligned"  # 사용하지 않음
 
-# 샘플 이름 정의 - 다양한 FASTQ 파일명 패턴 지원
-# 여러 패턴을 순차적으로 시도하여 샘플 자동 인식
-SAMPLES = []
-FASTQ_PATTERNS = [
-    "*_1.fastq.gz",      # sample_1.fastq.gz (기본)
-    "*_R1.fastq.gz",     # sample_R1.fastq.gz
-    "*_R1_001.fastq.gz", # sample_R1_001.fastq.gz (Illumina)
-    "*.1.fastq.gz",      # sample.1.fastq.gz
-    "*_1.fq.gz",         # sample_1.fq.gz
-    "*_R1.fq.gz",        # sample_R1.fq.gz
-]
+# 샘플 이름 정의 - 두 가지 방식 지원
+# 1. 샘플 시트 사용 (use_sample_sheet: true)
+# 2. FASTQ 파일 자동 감지 (use_sample_sheet: false, 기본값)
 
-import glob
+USE_SAMPLE_SHEET = config.get("use_sample_sheet", False)
+SAMPLE_SHEET_PATH = config.get("sample_sheet", "config/samples/master.csv")
+SAMPLE_METADATA = {}  # 샘플 메타데이터 딕셔너리
 
-for pattern in FASTQ_PATTERNS:
-    files = glob.glob(f"{RAW_DATA_DIR}/{pattern}")
-    if files:
-        # 첫 번째 매칭되는 패턴 사용
-        if "_1.fastq.gz" in pattern:
-            SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}_1.fastq.gz")
-        elif "_R1.fastq.gz" in pattern:
-            SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}_R1.fastq.gz")
-        elif "_R1_001.fastq.gz" in pattern:
-            SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}_R1_001.fastq.gz")
-        elif ".1.fastq.gz" in pattern:
-            SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}.1.fastq.gz")
-        elif "_1.fq.gz" in pattern:
-            SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}_1.fq.gz")
-        elif "_R1.fq.gz" in pattern:
-            SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}_R1.fq.gz")
+if USE_SAMPLE_SHEET:
+    # 방식 1: 샘플 시트에서 읽기
+    import pandas as pd
+    from pathlib import Path
+    
+    sample_sheet_file = Path(SAMPLE_SHEET_PATH)
+    if not sample_sheet_file.exists():
+        raise ValueError(f"Sample sheet not found: {SAMPLE_SHEET_PATH}")
+    
+    # 샘플 시트 읽기
+    samples_df = pd.read_csv(sample_sheet_file)
+    
+    # 현재 프로젝트의 샘플만 필터링
+    if 'project_id' in samples_df.columns:
+        samples_df = samples_df[samples_df['project_id'] == PROJECT_ID]
+        if len(samples_df) == 0:
+            raise ValueError(f"No samples found for project_id: {PROJECT_ID} in {SAMPLE_SHEET_PATH}")
+    
+    # 샘플 리스트 추출
+    SAMPLES = samples_df['sample_id'].tolist()
+    
+    # 메타데이터 딕셔너리로 변환
+    SAMPLE_METADATA = samples_df.set_index('sample_id').to_dict('index')
+    
+    # FASTQ 경로가 샘플 시트에 있으면 사용
+    if 'fastq_1' in samples_df.columns:
+        # 샘플 시트의 FASTQ 경로를 사용하는 헬퍼 함수
+        def get_raw_fastq_r1(wildcards):
+            return SAMPLE_METADATA[wildcards.sample]['fastq_1']
         
-        # 사용된 패턴 저장
-        DETECTED_PATTERN = pattern.replace("*", "{sample}")
-        break
+        def get_raw_fastq_r2(wildcards):
+            return SAMPLE_METADATA[wildcards.sample]['fastq_2']
+        
+        def get_raw_fastq_by_read(wildcards):
+            if wildcards.read == "1":
+                return SAMPLE_METADATA[wildcards.sample]['fastq_1']
+            else:
+                return SAMPLE_METADATA[wildcards.sample]['fastq_2']
+        
+        print(f"  Sample Sheet Mode: Using FASTQ paths from {SAMPLE_SHEET_PATH}")
+    else:
+        # FASTQ 경로가 없으면 data_dir에서 자동 감지로 폴백
+        print(f"  Sample Sheet Mode: FASTQ paths not in sheet, using auto-detection")
+        USE_SAMPLE_SHEET = False  # 아래 자동 감지 로직 사용
 
-if not SAMPLES:
-    raise ValueError(
-        f"No FASTQ files found in {RAW_DATA_DIR}\n"
-        f"Supported patterns: {', '.join(FASTQ_PATTERNS)}\n"
-        f"Please check:\n"
-        f"  1. data_dir path in config file\n"
-        f"  2. FASTQ file naming convention\n"
-        f"  3. File extensions (.fastq.gz or .fq.gz)"
-    )
+else:
+    # 방식 2: FASTQ 파일 자동 감지 (기존 방식)
+    SAMPLES = []
+    FASTQ_PATTERNS = [
+        "*_1.fastq.gz",      # sample_1.fastq.gz (기본)
+        "*_R1.fastq.gz",     # sample_R1.fastq.gz
+        "*_R1_001.fastq.gz", # sample_R1_001.fastq.gz (Illumina)
+        "*.1.fastq.gz",      # sample.1.fastq.gz
+        "*_1.fq.gz",         # sample_1.fq.gz
+        "*_R1.fq.gz",        # sample_R1.fq.gz
+    ]
+
+    import glob
+
+    for pattern in FASTQ_PATTERNS:
+        files = glob.glob(f"{RAW_DATA_DIR}/{pattern}")
+        if files:
+            # 첫 번째 매칭되는 패턴 사용
+            if "_1.fastq.gz" in pattern:
+                SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}_1.fastq.gz")
+            elif "_R1.fastq.gz" in pattern:
+                SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}_R1.fastq.gz")
+            elif "_R1_001.fastq.gz" in pattern:
+                SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}_R1_001.fastq.gz")
+            elif ".1.fastq.gz" in pattern:
+                SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}.1.fastq.gz")
+            elif "_1.fq.gz" in pattern:
+                SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}_1.fq.gz")
+            elif "_R1.fq.gz" in pattern:
+                SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}_R1.fq.gz")
+            
+            # 사용된 패턴 저장
+            DETECTED_PATTERN = pattern.replace("*", "{sample}")
+            break
+
+    if not SAMPLES:
+        raise ValueError(
+            f"No FASTQ files found in {RAW_DATA_DIR}\n"
+            f"Supported patterns: {', '.join(FASTQ_PATTERNS)}\n"
+            f"Please check:\n"
+            f"  1. data_dir path in config file\n"
+            f"  2. FASTQ file naming convention\n"
+            f"  3. File extensions (.fastq.gz or .fq.gz)\n"
+            f"  OR use sample sheet: set use_sample_sheet: true in config"
+        )
 
 # 로그 디렉토리 자동 생성
 os.makedirs(f"{LOGS_DIR}/fastqc", exist_ok=True)
@@ -164,10 +218,18 @@ else:
     print(f"  Legacy Mode - Results Dir: {RESULTS_DIR}")
 print(f"  Data Dir: {RAW_DATA_DIR}")
 print(f"  Logs Dir: {LOGS_DIR}")
-print(f"  Detected FASTQ Pattern: {DETECTED_PATTERN}")
+print(f"  Sample Loading: {'Sample Sheet' if USE_SAMPLE_SHEET else 'Auto-detect (glob)'}")
+if USE_SAMPLE_SHEET:
+    print(f"  Sample Sheet: {SAMPLE_SHEET_PATH}")
+else:
+    print(f"  Detected FASTQ Pattern: {DETECTED_PATTERN}")
 print(f"  Found {len(SAMPLES)} samples")
 if SAMPLES:
     print(f"  Sample list: {SAMPLES[:5]}{'...' if len(SAMPLES) > 5 else ''}")
+    # 메타데이터가 있으면 조건 정보도 표시
+    if SAMPLE_METADATA and 'condition' in list(SAMPLE_METADATA.values())[0]:
+        conditions = set(meta.get('condition', 'unknown') for meta in SAMPLE_METADATA.values())
+        print(f"  Conditions: {', '.join(sorted(conditions))}")
 else:
     print(f"  WARNING: No samples found in {RAW_DATA_DIR}")
 print(f"=" * 80)
