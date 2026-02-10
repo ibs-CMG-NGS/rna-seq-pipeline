@@ -28,3 +28,7 @@ dependencies:
   
   # Workflow management
   - snakemake-minimal=7.32
+  
+  # Python libraries
+  - pandas=2.0
+  - numpy=1.24
