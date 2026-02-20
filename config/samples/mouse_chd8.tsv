@@ -1,0 +1,2 @@
+sample_id	condition	replicate	tissue	age	sex	fastq_r1	fastq_r2	notes
+Chd8_HPC_10M_W	CHD8_het	1	HPC	10M	female	/path/to/Chd8_HPC_10M_W_R1.fastq.gz	/path/to/Chd8_HPC_10M_W_R2.fastq.gz	CHD8+/- heterozygous, hippocampus, 10 months
