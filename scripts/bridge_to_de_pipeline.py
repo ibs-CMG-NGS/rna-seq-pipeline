@@ -16,6 +16,15 @@ import pandas as pd
 import yaml
 from datetime import datetime
 
+# Import auto-config utilities
+try:
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    from scripts.utils.auto_config import ensure_bridge_config
+    AUTO_CONFIG_AVAILABLE = True
+except ImportError:
+    AUTO_CONFIG_AVAILABLE = False
+    print("⚠️  Warning: auto_config not available, --config will be required")
+
 
 def load_path_config(config_path: Path) -> dict:
     """Load path configuration from YAML file."""
@@ -358,22 +367,34 @@ class PipelineBridge:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Bridge RNA-seq preprocessing to DE/GO analysis"
+        description="Bridge RNA-seq preprocessing to DE/GO analysis",
+        epilog="""
+Examples:
+  # Auto-config mode (recommended):
+  %(prog)s --project-id mouse-chd8 --skip-de --yes
+  
+  # With explicit config:
+  %(prog)s --config config/projects/paths_mouse_chd8.yaml --project-id mouse-chd8 --skip-de --yes
+  
+  # With explicit paths:
+  %(prog)s --rnaseq-output /path/to/output --de-pipeline /path/to/de --project-id mouse-chd8
+        """,
+        formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument(
         '--config',
         type=Path,
-        help='Path to YAML config file (e.g., config/projects/paths_mouse_chd8.yaml)'
+        help='Path to YAML config file (auto-generated if not provided)'
     )
     parser.add_argument(
         '--rnaseq-output',
         type=Path,
-        help='RNA-seq pipeline output directory (overrides config)'
+        help='RNA-seq pipeline output directory (auto-detected from config if not provided)'
     )
     parser.add_argument(
         '--de-pipeline',
         type=Path,
-        help='DE/GO pipeline directory (overrides config)'
+        help='DE/GO pipeline directory (auto-detected from config if not provided)'
     )
     parser.add_argument(
         '--project-id',
@@ -398,11 +419,37 @@ def main():
     
     args = parser.parse_args()
     
-    # Load config file if provided
+    # Auto-generate config if not provided
+    if not args.config and AUTO_CONFIG_AVAILABLE:
+        print(f"📝 No config provided, attempting auto-generation for {args.project_id}...")
+        
+        try:
+            result = ensure_bridge_config(
+                args.project_id,
+                rnaseq_output=str(args.rnaseq_output) if args.rnaseq_output else None,
+                de_pipeline=str(args.de_pipeline) if args.de_pipeline else None,
+                force=False
+            )
+            
+            if result['status'] in ['created', 'exists']:
+                args.config = Path(result['config_path'])
+                print(f"✅ Using config: {args.config}")
+                
+                if result['status'] == 'created':
+                    print(f"   (Auto-generated from project summary)")
+            else:
+                print(f"⚠️  Auto-config failed: {result['message']}")
+                print(f"   Continuing with CLI arguments...")
+        
+        except Exception as e:
+            print(f"⚠️  Auto-config error: {e}")
+            print(f"   Continuing with CLI arguments...")
+    
+    # Load config file if provided or auto-generated
     config = {}
     if args.config:
         config = load_path_config(args.config)
-        if config:
+        if config and not AUTO_CONFIG_AVAILABLE:
             print(f"📁 Loaded config: {args.config}")
     
     # Resolve paths with fallback order: CLI > ENV > config > defaults
