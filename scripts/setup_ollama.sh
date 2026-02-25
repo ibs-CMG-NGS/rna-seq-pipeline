@@ -1,11 +1,15 @@
 #!/bin/bash
-# Ollama Quick Setup Script for RNA-seq Pipeline
+# Ollama Setup Script for NGS Pipelines
+# Current: RNA-seq Pipeline (testing & standardization)
+# Future: Extensible to ATAC-seq, WGS, etc.
+# 
 # Usage: bash scripts/setup_ollama.sh
 
 set -e  # Exit on error
 
 echo "=================================================="
-echo "🤖 Ollama Setup for RNA-seq Pipeline"
+echo "🤖 Ollama Setup for NGS Pipelines"
+echo "   Phase 1: RNA-seq Pipeline"
 echo "=================================================="
 echo ""
 
@@ -111,6 +115,15 @@ if systemctl list-unit-files | grep -q ollama.service; then
     
     if systemctl is-active --quiet ollama; then
         print_success "Ollama service is running"
+        
+        # Check if custom model path is set
+        OLLAMA_MODELS_PATH=$(systemctl show ollama -p Environment | grep OLLAMA_MODELS || echo "")
+        if [[ -z "$OLLAMA_MODELS_PATH" ]]; then
+            print_info "Consider setting custom model path for better disk management:"
+            echo "    sudo mkdir -p /data_3tb/shared/ollama-models"
+            echo "    sudo systemctl edit ollama"
+            echo "    # Add: Environment=\"OLLAMA_MODELS=/data_3tb/shared/ollama-models\""
+        fi
     else
         print_error "Ollama service failed to start"
         sudo journalctl -u ollama -n 20 --no-pager
@@ -184,9 +197,10 @@ echo "Installation Summary:"
 echo "  • Ollama version: $(ollama --version 2>&1 | head -1)"
 echo "  • Model: llama3.1:8b"
 echo "  • API endpoint: http://localhost:11434"
+echo "  • Current pipeline: RNA-seq"
 echo ""
 echo "Next Steps:"
-echo "  1. Test LLM agent:"
+echo "  1. Test LLM agent (RNA-seq):"
 echo "     cd /data_3tb/shared/rna-seq-pipeline"
 echo "     conda activate rna-seq-pipeline"
 echo "     python scripts/standardization/llm_agent.py \\"
@@ -200,5 +214,10 @@ echo "     - 'DE 분석 준비해줘'"
 echo ""
 echo "  3. View documentation:"
 echo "     cat docs/developer/PHASE5_OLLAMA_SETUP.md"
+echo ""
+echo "Future Expansion:"
+echo "  • ATAC-seq pipeline integration"
+echo "  • WGS pipeline integration"
+echo "  • Unified NGS agent (multi-pipeline)"
 echo ""
 echo "=================================================="
