@@ -177,6 +177,52 @@ class PipelineAgent:
                     },
                     "required": ["confirm"]
                 }
+            },
+            {
+                "name": "prepare_de_analysis",
+                "description": "Prepare DE/GO analysis by copying counts, generating metadata, and creating config. Does not start the actual analysis.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "project_id": {
+                            "type": "string",
+                            "description": "Project identifier (optional, uses current project if not specified)"
+                        }
+                    },
+                    "required": []
+                }
+            },
+            {
+                "name": "check_bridge_config",
+                "description": "Check if bridge configuration exists for the project, create if missing",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "project_id": {
+                            "type": "string",
+                            "description": "Project identifier"
+                        },
+                        "force_regenerate": {
+                            "type": "boolean",
+                            "description": "Force regenerate config even if exists"
+                        }
+                    },
+                    "required": ["project_id"]
+                }
+            },
+            {
+                "name": "validate_paths",
+                "description": "Validate that all required paths exist for DE/GO analysis",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "project_id": {
+                            "type": "string",
+                            "description": "Project identifier"
+                        }
+                    },
+                    "required": ["project_id"]
+                }
             }
         ]
     
@@ -245,6 +291,66 @@ class PipelineAgent:
                 "status": "started" if result.returncode == 0 else "failed",
                 "output": result.stdout,
                 "error": result.stderr
+            }
+        
+        elif tool_name == "prepare_de_analysis":
+            project_id = arguments.get("project_id", self.project_id)
+            
+            # Run bridge script in preparation mode (--skip-de)
+            result = subprocess.run([
+                "conda", "run", "-n", "rna-seq-pipeline",
+                "python", "scripts/bridge_to_de_pipeline.py",
+                "--project-id", project_id,
+                "--skip-de",
+                "--yes"
+            ], capture_output=True, text=True, cwd="/data_3tb/shared/rna-seq-pipeline")
+            
+            return {
+                "status": "success" if result.returncode == 0 else "failed",
+                "output": result.stdout,
+                "error": result.stderr,
+                "message": "DE analysis preparation complete" if result.returncode == 0 else "Preparation failed"
+            }
+        
+        elif tool_name == "check_bridge_config":
+            project_id = arguments.get("project_id")
+            force = arguments.get("force_regenerate", False)
+            
+            # Import auto_config
+            sys.path.insert(0, str(Path(__file__).parent.parent))
+            from scripts.utils.auto_config import ensure_bridge_config
+            
+            result = ensure_bridge_config(project_id, force=force)
+            return result
+        
+        elif tool_name == "validate_paths":
+            project_id = arguments.get("project_id")
+            
+            # Import auto_config
+            sys.path.insert(0, str(Path(__file__).parent.parent))
+            from scripts.utils.auto_config import ensure_bridge_config, validate_paths
+            
+            # Get or create config
+            config_result = ensure_bridge_config(project_id)
+            
+            if config_result['status'] == 'error':
+                return config_result
+            
+            # Validate paths
+            if 'config' in config_result:
+                validation = validate_paths(config_result['config'])
+            else:
+                # Load existing config
+                import yaml
+                with open(config_result['config_path']) as f:
+                    config = yaml.safe_load(f)
+                validation = validate_paths(config)
+            
+            return {
+                "status": "validated",
+                "validation": validation,
+                "all_valid": all(validation.values()),
+                "missing_paths": [k for k, v in validation.items() if not v]
             }
         
         else:
