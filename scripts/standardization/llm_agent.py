@@ -6,6 +6,8 @@ Enables conversational interaction with the pipeline:
 - "What's the QC status of my samples?"
 - "Compare wildtype vs heterozygous"
 - "Start DE analysis"
+
+Security: Input validation and sandboxing applied to all tool executions.
 """
 
 import json
@@ -14,6 +16,21 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional
 import subprocess
 import sys
+
+# Import security utilities
+sys.path.insert(0, str(Path(__file__).parent.parent))
+try:
+    from scripts.utils.security import (
+        validate_project_id,
+        validate_sample_id,
+        validate_path,
+        sanitize_command_args,
+        SecurityError
+    )
+    SECURITY_ENABLED = True
+except ImportError:
+    print("⚠️  Warning: Security utilities not available")
+    SECURITY_ENABLED = False
 
 # LLM Integration
 try:
@@ -256,6 +273,14 @@ class PipelineAgent:
         
         elif tool_name == "get_sample_details":
             sample_id = arguments.get("sample_id")
+            
+            # Security: Validate sample_id
+            if SECURITY_ENABLED:
+                try:
+                    sample_id = validate_sample_id(sample_id)
+                except SecurityError as e:
+                    return {"status": "error", "message": f"Security validation failed: {e}"}
+            
             result = subprocess.run([
                 "python", "scripts/standardization/agent_query.py",
                 "--project-summary", str(self.project_summary_path),
@@ -296,6 +321,13 @@ class PipelineAgent:
         elif tool_name == "prepare_de_analysis":
             project_id = arguments.get("project_id", self.project_id)
             
+            # Security: Validate project_id
+            if SECURITY_ENABLED:
+                try:
+                    project_id = validate_project_id(project_id)
+                except SecurityError as e:
+                    return {"status": "error", "message": f"Security validation failed: {e}"}
+            
             # Run bridge script in preparation mode (--skip-de)
             result = subprocess.run([
                 "conda", "run", "-n", "rna-seq-pipeline",
@@ -316,6 +348,13 @@ class PipelineAgent:
             project_id = arguments.get("project_id")
             force = arguments.get("force_regenerate", False)
             
+            # Security: Validate project_id
+            if SECURITY_ENABLED:
+                try:
+                    project_id = validate_project_id(project_id)
+                except SecurityError as e:
+                    return {"status": "error", "message": f"Security validation failed: {e}"}
+            
             # Import auto_config
             sys.path.insert(0, str(Path(__file__).parent.parent))
             from scripts.utils.auto_config import ensure_bridge_config
@@ -325,6 +364,13 @@ class PipelineAgent:
         
         elif tool_name == "validate_paths":
             project_id = arguments.get("project_id")
+            
+            # Security: Validate project_id
+            if SECURITY_ENABLED:
+                try:
+                    project_id = validate_project_id(project_id)
+                except SecurityError as e:
+                    return {"status": "error", "message": f"Security validation failed: {e}"}
             
             # Import auto_config
             sys.path.insert(0, str(Path(__file__).parent.parent))
