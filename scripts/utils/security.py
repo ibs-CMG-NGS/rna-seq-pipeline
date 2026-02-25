@@ -142,6 +142,7 @@ ALLOWED_COMMANDS = {
     'conda',
     'snakemake',
     'bash',  # Only for specific scripts
+    'git',   # For version control operations
 }
 
 
