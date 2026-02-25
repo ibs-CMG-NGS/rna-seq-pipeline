@@ -105,19 +105,25 @@ class PipelineBridge:
         # Get sample sheet directory from config or use defaults
         sample_sheet_dir = self.config.get('sample_sheet_dir')
         
+        # Convert project_id: try both with hyphens and underscores
+        # (e.g., "mouse-chd8" -> try both "mouse-chd8.tsv" and "mouse_chd8.tsv")
+        project_ids = [self.project_id, self.project_id.replace('-', '_')]
+        
         # Try multiple possible locations for sample sheet
         possible_paths = []
         
         # First priority: config specified directory
         if sample_sheet_dir:
-            possible_paths.append(Path(sample_sheet_dir) / f"{self.project_id}.tsv")
+            for pid in project_ids:
+                possible_paths.append(Path(sample_sheet_dir) / f"{pid}.tsv")
         
         # Fallback locations
-        possible_paths.extend([
-            Path("/data_3tb/shared/rna-seq-pipeline/config/samples") / f"{self.project_id}.tsv",
-            self.rnaseq_output.parent / "config" / "samples" / f"{self.project_id}.tsv",
-            Path("/home/ygkim/ngs-pipeline/rna-seq-pipeline/config/samples") / f"{self.project_id}.tsv",
-        ])
+        for pid in project_ids:
+            possible_paths.extend([
+                Path("/data_3tb/shared/rna-seq-pipeline/config/samples") / f"{pid}.tsv",
+                self.rnaseq_output.parent / "config" / "samples" / f"{pid}.tsv",
+                Path("/home/ygkim/ngs-pipeline/rna-seq-pipeline/config/samples") / f"{pid}.tsv",
+            ])
         
         sample_sheet_path = None
         for path in possible_paths:
