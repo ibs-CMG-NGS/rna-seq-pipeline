@@ -11,6 +11,9 @@ import argparse
 from pathlib import Path
 import subprocess
 import sys
+import pandas as pd
+import yaml
+from datetime import datetime
 
 class PipelineBridge:
     """Connect RNA-seq preprocessing to DE/GO analysis."""
@@ -76,25 +79,138 @@ class PipelineBridge:
         return dest_counts
     
     def generate_metadata_template(self) -> Path:
-        """Generate metadata template from sample sheet."""
+        """Generate metadata CSV from sample sheet for DE analysis."""
         # Read sample sheet from RNA-seq pipeline
-        sample_sheet = self.rnaseq_output.parent / "config" / "samples" / f"{self.project_id}.tsv"
+        sample_sheet_path = self.rnaseq_output.parent / "config" / "samples" / f"{self.project_id}.tsv"
         
-        if not sample_sheet.exists():
-            print(f"\n⚠️  Sample sheet not found: {sample_sheet}")
+        if not sample_sheet_path.exists():
+            print(f"\n⚠️  Sample sheet not found: {sample_sheet_path}")
             print("You'll need to create metadata manually for DE analysis")
             return None
         
-        # TODO: Parse sample sheet and generate metadata template
-        # For now, just inform user
-        print(f"\n📝 Sample sheet found: {sample_sheet}")
-        print("Please create metadata file for DE analysis based on this.")
+        print(f"\n📝 Generating metadata from sample sheet...")
+        print(f"  Source: {sample_sheet_path}")
         
-        return sample_sheet
+        # Read sample sheet
+        df = pd.read_csv(sample_sheet_path, sep='\t')
+        
+        # Create metadata for DE analysis (sample_id, condition, replicate)
+        metadata_cols = ['sample_id', 'condition', 'replicate']
+        
+        # Check if required columns exist
+        missing_cols = [col for col in metadata_cols if col not in df.columns]
+        if missing_cols:
+            print(f"⚠️  Missing columns in sample sheet: {missing_cols}")
+            print("Using available columns...")
+            metadata_cols = [col for col in metadata_cols if col in df.columns]
+        
+        # Add optional columns if available
+        optional_cols = ['tissue', 'sex', 'age', 'treatment', 'time_point']
+        for col in optional_cols:
+            if col in df.columns:
+                metadata_cols.append(col)
+        
+        # Extract metadata
+        metadata_df = df[metadata_cols].copy()
+        
+        # Save metadata
+        de_data_dir = self.de_pipeline / "data" / "raw"
+        metadata_path = de_data_dir / f"{self.project_id}_metadata.csv"
+        metadata_df.to_csv(metadata_path, index=False)
+        
+        print(f"  Output: {metadata_path}")
+        print(f"  Columns: {', '.join(metadata_cols)}")
+        print(f"  Samples: {len(metadata_df)}")
+        print(f"  Conditions: {metadata_df['condition'].unique().tolist()}")
+        
+        return metadata_path
     
-    def trigger_de_analysis(self, dry_run: bool = False):
+    def generate_de_config(self, counts_path: Path, metadata_path: Path) -> Path:
+        """Generate config.yml for DE/GO analysis pipeline from template."""
+        print(f"\n⚙️  Generating DE/GO pipeline config...")
+        
+        # Load template config
+        template_path = self.de_pipeline / "configs" / "template" / "config.yml"
+        if not template_path.exists():
+            print(f"⚠️  Template config not found: {template_path}")
+            print("Creating config from scratch...")
+            config = {}
+        else:
+            print(f"  Loading template: {template_path}")
+            with open(template_path) as f:
+                config = yaml.safe_load(f)
+        
+        # Read metadata to determine species and conditions
+        metadata_df = pd.read_csv(metadata_path)
+        conditions = metadata_df['condition'].unique().tolist()
+        
+        # Auto-detect species from project_id or use default
+        species = "mouse" if "mouse" in self.project_id.lower() or "chd8" in self.project_id.lower() else "human"
+        
+        # Determine pairwise comparisons (all vs first condition as control)
+        # User can modify this later
+        control_condition = conditions[0]  # Assume first is control
+        pairwise_comparisons = []
+        for cond in conditions[1:]:
+            pairwise_comparisons.append({
+                'name': f"{cond}_vs_{control_condition}",
+                'treatment': cond,
+                'control': control_condition
+            })
+        
+        # Update config with project-specific values
+        config['species'] = species
+        config['gene_id_type'] = 'ENSEMBL'  # From featureCounts
+        config['count_data_path'] = f"data/raw/{counts_path.name}"
+        config['metadata_path'] = f"data/raw/{metadata_path.name}"
+        config['output_dir'] = f"output/{self.project_id}"
+        
+        # Update DE analysis section
+        if 'de_analysis' not in config:
+            config['de_analysis'] = {}
+        
+        config['de_analysis']['pairwise_comparisons'] = pairwise_comparisons
+        
+        # Add generation metadata as comments (YAML doesn't support inline comments in dicts)
+        config_header = f"""# Generated by RNA-seq pipeline bridge
+# Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+# Project: {self.project_id}
+# Auto-detected species: {species}
+# 
+# ⚠️  IMPORTANT: Please review and adjust if needed!
+#    - Verify species is correct
+#    - Check control condition (currently: {control_condition})
+#    - Review pairwise comparisons
+#    - Adjust other parameters as needed
+#
+"""
+        
+        # Save config
+        config_path = self.de_pipeline / "configs" / f"config_{self.project_id}.yml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        with open(config_path, 'w') as f:
+            f.write(config_header)
+            yaml.dump(config, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+        
+        print(f"  Output: {config_path}")
+        print(f"  Species: {species}")
+        print(f"  Conditions: {', '.join(conditions)}")
+        print(f"  Control: {control_condition} (assumed)")
+        print(f"  Comparisons: {len(pairwise_comparisons)}")
+        for comp in pairwise_comparisons:
+            print(f"    - {comp['name']}")
+        print(f"\n  ⚠️  Please review config file before running DE analysis!")
+        print(f"     Config: {config_path}")
+        
+        return config_path
+    
+    def trigger_de_analysis(self, dry_run: bool = False, config_file: Path = None):
         """Trigger DE/GO analysis pipeline."""
         print(f"\n🚀 Triggering DE/GO analysis...")
+        
+        if config_file:
+            print(f"  Using config: {config_file.name}")
         
         cmd = [
             "snakemake",
@@ -108,6 +224,10 @@ class PipelineBridge:
             print("DRY RUN mode - no actual execution")
         
         print(f"Command: {' '.join(cmd)}")
+        
+        if config_file:
+            print(f"\n⚠️  Note: You may need to update Snakefile line 6:")
+            print(f'     CONFIG_FILE = "configs/config_{self.project_id}.yml"')
         
         if not dry_run:
             response = input("\nExecute DE/GO pipeline? (y/n): ")
@@ -137,22 +257,45 @@ class PipelineBridge:
         
         print("✅ RNA-seq pipeline completed")
         
-        # Step 2: Prepare DE input
-        print("\n[Step 2] Preparing DE/GO pipeline input...")
+        # Step 2: Prepare DE input - counts matrix
+        print("\n[Step 2] Preparing counts matrix...")
         counts_file = self.prepare_de_input()
         print(f"✅ Counts matrix prepared: {counts_file}")
         
-        # Step 3: Generate metadata template
-        print("\n[Step 3] Checking sample metadata...")
-        self.generate_metadata_template()
-        
-        # Step 4: Trigger DE analysis (optional)
-        if not skip_de:
-            self.trigger_de_analysis(dry_run=dry_run)
+        # Step 3: Generate metadata from sample sheet
+        print("\n[Step 3] Generating metadata...")
+        metadata_file = self.generate_metadata_template()
+        if metadata_file:
+            print(f"✅ Metadata generated: {metadata_file}")
         else:
-            print("\n⏭️  Skipping DE analysis (--skip-de flag)")
-            print(f"\nTo run DE analysis manually:")
+            print("⚠️  Metadata generation failed. Manual creation needed.")
+            if not dry_run:
+                response = input("Continue without metadata? (y/n): ")
+                if response.lower() != 'y':
+                    sys.exit(1)
+        
+        # Step 4: Generate DE/GO config file
+        print("\n[Step 4] Generating DE/GO pipeline config...")
+        if metadata_file:
+            config_file = self.generate_de_config(counts_file, metadata_file)
+            print(f"✅ Config generated: {config_file}")
+        else:
+            print("⚠️  Config generation skipped (no metadata)")
+            config_file = None
+        
+        # Step 5: Trigger DE analysis (optional)
+        if not skip_de and config_file:
+            self.trigger_de_analysis(dry_run=dry_run, config_file=config_file)
+        else:
+            if skip_de:
+                print("\n⏭️  Skipping DE analysis (--skip-de flag)")
+            else:
+                print("\n⏭️  Skipping DE analysis (no config file)")
+            
+            print(f"\n📋 To run DE analysis manually:")
             print(f"  cd {self.de_pipeline}")
+            if config_file:
+                print(f"  # Edit Snakefile line 6 to use: config_{self.project_id}.yml")
             print(f"  snakemake --cores 4 --use-conda")
 
 def main():
