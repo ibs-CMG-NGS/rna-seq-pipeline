@@ -11,9 +11,21 @@ import argparse
 from pathlib import Path
 import subprocess
 import sys
+import os
 import pandas as pd
 import yaml
 from datetime import datetime
+
+
+def load_path_config(config_path: Path) -> dict:
+    """Load path configuration from YAML file."""
+    if not config_path or not config_path.exists():
+        return {}
+    
+    with open(config_path) as f:
+        config = yaml.safe_load(f) or {}
+    
+    return config
 
 class PipelineBridge:
     """Connect RNA-seq preprocessing to DE/GO analysis."""
@@ -21,21 +33,27 @@ class PipelineBridge:
     def __init__(self, 
                  rnaseq_output_dir: Path,
                  de_pipeline_dir: Path,
-                 project_id: str):
+                 project_id: str,
+                 config: dict = None,
+                 assume_yes: bool = False):
         self.rnaseq_output = Path(rnaseq_output_dir)
         self.de_pipeline = Path(de_pipeline_dir)
         self.project_id = project_id
+        self.config = config or {}
+        self.assume_yes = assume_yes
         
     def check_rnaseq_completion(self) -> bool:
         """Check if RNA-seq pipeline completed successfully."""
         # Check for counts matrix
-        counts_file = self.rnaseq_output / "counts" / "counts_matrix.txt"
+        counts_relpath = self.config.get('counts_relpath', 'project_summary/counts/counts_matrix_clean.csv')
+        counts_file = self.rnaseq_output / counts_relpath
         if not counts_file.exists():
             print(f"❌ Counts matrix not found: {counts_file}")
             return False
         
         # Check project summary
-        summary_file = self.rnaseq_output / "project_summary.json"
+        summary_relpath = self.config.get('summary_relpath', 'project_summary.json')
+        summary_file = self.rnaseq_output / summary_relpath
         if not summary_file.exists():
             print(f"⚠️  Project summary not found: {summary_file}")
             return True  # Not critical, continue
@@ -53,16 +71,20 @@ class PipelineBridge:
         
         if qc_status['failed'] > 0:
             print(f"\n⚠️  Warning: {qc_status['failed']} samples failed QC")
-            response = input("Continue with DE analysis? (y/n): ")
-            if response.lower() != 'y':
-                return False
+            if self.assume_yes:
+                print("Continuing with failed samples (--yes flag)")
+            else:
+                response = input("Continue with DE analysis? (y/n): ")
+                if response.lower() != 'y':
+                    return False
         
         return True
     
     def prepare_de_input(self) -> Path:
         """Copy counts matrix to DE pipeline input directory."""
         # Source files
-        counts_file = self.rnaseq_output / "counts" / "counts_matrix.txt"
+        counts_relpath = self.config.get('counts_relpath', 'project_summary/counts/counts_matrix_clean.csv')
+        counts_file = self.rnaseq_output / counts_relpath
         
         # Destination
         de_data_dir = self.de_pipeline / "data" / "raw"
@@ -80,11 +102,33 @@ class PipelineBridge:
     
     def generate_metadata_template(self) -> Path:
         """Generate metadata CSV from sample sheet for DE analysis."""
-        # Read sample sheet from RNA-seq pipeline
-        sample_sheet_path = self.rnaseq_output.parent / "config" / "samples" / f"{self.project_id}.tsv"
+        # Get sample sheet directory from config or use defaults
+        sample_sheet_dir = self.config.get('sample_sheet_dir')
         
-        if not sample_sheet_path.exists():
-            print(f"\n⚠️  Sample sheet not found: {sample_sheet_path}")
+        # Try multiple possible locations for sample sheet
+        possible_paths = []
+        
+        # First priority: config specified directory
+        if sample_sheet_dir:
+            possible_paths.append(Path(sample_sheet_dir) / f"{self.project_id}.tsv")
+        
+        # Fallback locations
+        possible_paths.extend([
+            Path("/data_3tb/shared/rna-seq-pipeline/config/samples") / f"{self.project_id}.tsv",
+            self.rnaseq_output.parent / "config" / "samples" / f"{self.project_id}.tsv",
+            Path("/home/ygkim/ngs-pipeline/rna-seq-pipeline/config/samples") / f"{self.project_id}.tsv",
+        ])
+        
+        sample_sheet_path = None
+        for path in possible_paths:
+            if path.exists():
+                sample_sheet_path = path
+                break
+        
+        if not sample_sheet_path:
+            print(f"\n⚠️  Sample sheet not found. Tried:")
+            for path in possible_paths:
+                print(f"    - {path}")
             print("You'll need to create metadata manually for DE analysis")
             return None
         
@@ -230,10 +274,13 @@ class PipelineBridge:
             print(f'     CONFIG_FILE = "configs/config_{self.project_id}.yml"')
         
         if not dry_run:
-            response = input("\nExecute DE/GO pipeline? (y/n): ")
-            if response.lower() != 'y':
-                print("Aborted.")
-                return
+            if self.assume_yes:
+                print("\nExecuting DE/GO pipeline (--yes flag)")
+            else:
+                response = input("\nExecute DE/GO pipeline? (y/n): ")
+                if response.lower() != 'y':
+                    print("Aborted.")
+                    return
         
         try:
             subprocess.run(cmd, cwd=self.de_pipeline, check=True)
@@ -269,10 +316,15 @@ class PipelineBridge:
             print(f"✅ Metadata generated: {metadata_file}")
         else:
             print("⚠️  Metadata generation failed. Manual creation needed.")
-            if not dry_run:
-                response = input("Continue without metadata? (y/n): ")
-                if response.lower() != 'y':
-                    sys.exit(1)
+            if not dry_run and not skip_de:
+                if self.assume_yes:
+                    print("   (Continuing without metadata due to --yes flag)")
+                else:
+                    response = input("Continue without metadata? (y/n): ")
+                    if response.lower() != 'y':
+                        sys.exit(1)
+            elif skip_de:
+                print("   (Continuing in --skip-de mode)")
         
         # Step 4: Generate DE/GO config file
         print("\n[Step 4] Generating DE/GO pipeline config...")
@@ -303,16 +355,19 @@ def main():
         description="Bridge RNA-seq preprocessing to DE/GO analysis"
     )
     parser.add_argument(
+        '--config',
+        type=Path,
+        help='Path to YAML config file (e.g., config/projects/paths_mouse_chd8.yaml)'
+    )
+    parser.add_argument(
         '--rnaseq-output',
         type=Path,
-        required=True,
-        help='RNA-seq pipeline output directory'
+        help='RNA-seq pipeline output directory (overrides config)'
     )
     parser.add_argument(
         '--de-pipeline',
         type=Path,
-        required=True,
-        help='DE/GO pipeline directory'
+        help='DE/GO pipeline directory (overrides config)'
     )
     parser.add_argument(
         '--project-id',
@@ -329,23 +384,61 @@ def main():
         action='store_true',
         help='Only prepare files, do not trigger DE analysis'
     )
+    parser.add_argument(
+        '--yes',
+        action='store_true',
+        help='Assume yes to all prompts (non-interactive mode)'
+    )
     
     args = parser.parse_args()
     
-    # Validate paths
-    if not args.rnaseq_output.exists():
-        print(f"ERROR: RNA-seq output not found: {args.rnaseq_output}")
+    # Load config file if provided
+    config = {}
+    if args.config:
+        config = load_path_config(args.config)
+        if config:
+            print(f"📁 Loaded config: {args.config}")
+    
+    # Resolve paths with fallback order: CLI > ENV > config > defaults
+    rnaseq_output = args.rnaseq_output or \
+                    (Path(os.getenv('RNASEQ_OUTPUT')) if os.getenv('RNASEQ_OUTPUT') else None) or \
+                    (Path(config['rnaseq_output']) if 'rnaseq_output' in config else None)
+    
+    de_pipeline = args.de_pipeline or \
+                  (Path(os.getenv('DE_PIPELINE')) if os.getenv('DE_PIPELINE') else None) or \
+                  (Path(config['de_pipeline']) if 'de_pipeline' in config else None)
+    
+    # Validate required paths
+    if not rnaseq_output:
+        print("ERROR: RNA-seq output directory not specified.")
+        print("  Provide via: --rnaseq-output, RNASEQ_OUTPUT env var, or config file")
         sys.exit(1)
     
-    if not args.de_pipeline.exists():
-        print(f"ERROR: DE/GO pipeline not found: {args.de_pipeline}")
+    if not de_pipeline:
+        print("ERROR: DE/GO pipeline directory not specified.")
+        print("  Provide via: --de-pipeline, DE_PIPELINE env var, or config file")
+        sys.exit(1)
+    
+    # Convert to Path objects and resolve
+    rnaseq_output = Path(rnaseq_output).resolve()
+    de_pipeline = Path(de_pipeline).resolve()
+    
+    # Validate paths exist
+    if not rnaseq_output.exists():
+        print(f"ERROR: RNA-seq output not found: {rnaseq_output}")
+        sys.exit(1)
+    
+    if not de_pipeline.exists():
+        print(f"ERROR: DE/GO pipeline not found: {de_pipeline}")
         sys.exit(1)
     
     # Execute bridge
     bridge = PipelineBridge(
-        args.rnaseq_output,
-        args.de_pipeline,
-        args.project_id
+        rnaseq_output,
+        de_pipeline,
+        args.project_id,
+        config=config,
+        assume_yes=args.yes
     )
     
     bridge.run(dry_run=args.dry_run, skip_de=args.skip_de)
