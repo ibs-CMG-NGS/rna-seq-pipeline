@@ -45,3 +45,4 @@ benchmarks/
 # genome/*.fa
 # genome/*.fa.fai
 workflow.pdf
+__pycache__/
