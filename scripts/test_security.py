@@ -222,6 +222,7 @@ def test_command_validation():
         "conda",
         "git",
         "snakemake",
+        "bash",  # Allowed for specific scripts
     ]
     
     for cmd in valid_commands:
@@ -237,7 +238,7 @@ def test_command_validation():
         ("rm", "dangerous command"),
         ("curl", "not whitelisted"),
         ("wget", "not whitelisted"),
-        ("bash", "shell execution"),
+        ("sh", "shell execution"),
     ]
     
     for cmd, reason in invalid_commands:
