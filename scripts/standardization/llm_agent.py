@@ -240,6 +240,56 @@ class PipelineAgent:
                     },
                     "required": ["project_id"]
                 }
+            },
+            # Phase 8A: Pipeline Execution Tools
+            {
+                "name": "create_project_config",
+                "description": "Create new project configuration file from parameters",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "project_id": {"type": "string", "description": "Project identifier"},
+                        "data_dir": {"type": "string", "description": "Directory containing FASTQ files"},
+                        "results_dir": {"type": "string", "description": "Output directory for results"},
+                        "species": {"type": "string", "description": "Species (human/mouse)", "default": "human"}
+                    },
+                    "required": ["project_id", "data_dir", "results_dir"]
+                }
+            },
+            {
+                "name": "detect_fastq_files",
+                "description": "Scan directory and detect FASTQ files, determine read type and sample count",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "data_dir": {"type": "string", "description": "Directory to scan for FASTQ files"}
+                    },
+                    "required": ["data_dir"]
+                }
+            },
+            {
+                "name": "validate_input_data",
+                "description": "Pre-flight validation before pipeline execution (disk space, reference genome, etc.)",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "config_file": {"type": "string", "description": "Path to config.yaml file"}
+                    },
+                    "required": ["config_file"]
+                }
+            },
+            {
+                "name": "run_pipeline",
+                "description": "Execute RNA-seq pipeline with Snakemake",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "config_file": {"type": "string", "description": "Path to config.yaml"},
+                        "cores": {"type": "integer", "description": "Number of cores", "default": 8},
+                        "dry_run": {"type": "boolean", "description": "Show what would run without executing", "default": True}
+                    },
+                    "required": ["config_file"]
+                }
             }
         ]
     
@@ -399,6 +449,48 @@ class PipelineAgent:
                 "missing_paths": [k for k, v in validation.items() if not v]
             }
         
+        # Phase 8A: Pipeline Execution Tools
+        elif tool_name == "create_project_config":
+            try:
+                from scripts.utils.pipeline_tools import create_project_config
+                result = create_project_config(
+                    project_id=arguments['project_id'],
+                    data_dir=arguments['data_dir'],
+                    results_dir=arguments['results_dir'],
+                    species=arguments.get('species', 'human')
+                )
+                return result
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+        
+        elif tool_name == "detect_fastq_files":
+            try:
+                from scripts.utils.pipeline_tools import detect_fastq_files
+                result = detect_fastq_files(arguments['data_dir'])
+                return result
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+        
+        elif tool_name == "validate_input_data":
+            try:
+                from scripts.utils.pipeline_tools import validate_input_data
+                result = validate_input_data(arguments['config_file'])
+                return result
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+        
+        elif tool_name == "run_pipeline":
+            try:
+                from scripts.utils.pipeline_tools import run_pipeline
+                result = run_pipeline(
+                    config_file=arguments['config_file'],
+                    cores=arguments.get('cores', 8),
+                    dry_run=arguments.get('dry_run', True)
+                )
+                return result
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+        
         else:
             return {"error": f"Unknown tool: {tool_name}"}
     
@@ -426,11 +518,18 @@ When a user asks for information or action, respond with a tool call in JSON for
 TOOL_CALL: {{"name": "tool_name", "parameters": {{"param1": "value1"}}}}
 ```
 
-Examples:
+Examples (Analysis Management):
 - User: "QC 상태 보여줘" → TOOL_CALL: {{"name": "get_project_status", "parameters": {{}}}}
 - User: "Ctrl_1 샘플 정보 알려줘" → TOOL_CALL: {{"name": "get_sample_details", "parameters": {{"sample_id": "Ctrl_1"}}}}
 - User: "경로 검증해줘" → TOOL_CALL: {{"name": "validate_paths", "parameters": {{"project_id": "{self.project_id}"}}}}
 - User: "DE 분석 준비해줘" → TOOL_CALL: {{"name": "prepare_de_analysis", "parameters": {{"project_id": "{self.project_id}"}}}}
+
+Examples (Pipeline Execution):
+- User: "새 프로젝트 설정 만들어줘. test-2026, 데이터는 /data/raw/" → TOOL_CALL: {{"name": "create_project_config", "parameters": {{"project_id": "test-2026", "data_dir": "/data/raw", "results_dir": "/data/output/test-2026", "species": "human"}}}}
+- User: "/data/raw/ 폴더에서 FASTQ 파일 찾아줘" → TOOL_CALL: {{"name": "detect_fastq_files", "parameters": {{"data_dir": "/data/raw"}}}}
+- User: "입력 데이터 검증해줘" → TOOL_CALL: {{"name": "validate_input_data", "parameters": {{"config_file": "config/projects/test-2026.yaml"}}}}
+- User: "파이프라인 dry-run 해줘" → TOOL_CALL: {{"name": "run_pipeline", "parameters": {{"config_file": "config/projects/test-2026.yaml", "dry_run": true}}}}
+- User: "파이프라인 실행해줘" → TOOL_CALL: {{"name": "run_pipeline", "parameters": {{"config_file": "config/projects/test-2026.yaml", "dry_run": false, "cores": 8}}}}
 
 IMPORTANT:
 1. Always use TOOL_CALL format when action is needed
