@@ -403,7 +403,12 @@ class PipelineAgent:
             return {"error": f"Unknown tool: {tool_name}"}
     
     def _build_system_prompt(self) -> str:
-        """Build system prompt with project context."""
+        """Build system prompt with project context and tool usage instructions."""
+        tools_description = "\n".join([
+            f"- {tool['name']}: {tool['description']}"
+            for tool in self.tools
+        ])
+        
         return f"""You are an AI assistant for RNA-seq analysis pipeline management.
 
 Project Context:
@@ -412,14 +417,28 @@ Project Context:
 - QC pass rate: {self.project_summary['qc_summary']['pass_rate']}%
 - Conditions: {', '.join(self.project_summary['condition_groups'].keys())}
 
-Your role:
-1. Answer questions about QC status and sample quality
-2. Help interpret results and compare conditions
-3. Assist with downstream analysis decisions
-4. Execute pipeline commands when requested
+Available Tools:
+{tools_description}
+
+HOW TO USE TOOLS:
+When a user asks for information or action, respond with a tool call in JSON format:
+```
+TOOL_CALL: {{"name": "tool_name", "parameters": {{"param1": "value1"}}}}
+```
+
+Examples:
+- User: "QC 상태 보여줘" → TOOL_CALL: {{"name": "get_project_status", "parameters": {{}}}}
+- User: "Ctrl_1 샘플 정보 알려줘" → TOOL_CALL: {{"name": "get_sample_details", "parameters": {{"sample_id": "Ctrl_1"}}}}
+- User: "경로 검증해줘" → TOOL_CALL: {{"name": "validate_paths", "parameters": {{"project_id": "{self.project_id}"}}}}
+- User: "DE 분석 준비해줘" → TOOL_CALL: {{"name": "prepare_de_analysis", "parameters": {{"project_id": "{self.project_id}"}}}}
+
+IMPORTANT:
+1. Always use TOOL_CALL format when action is needed
+2. Extract parameters from user's natural language
+3. If user's intent is unclear, ask for clarification
+4. After tool execution, explain the results conversationally
 
 Be conversational, clear, and actionable. When showing numbers, include units and context.
-Always confirm before starting computationally expensive operations.
 """
     
     def chat(self, user_message: str) -> str:
@@ -491,9 +510,9 @@ Always confirm before starting computationally expensive operations.
     
     def _chat_ollama(self, user_message: str) -> str:
         """
-        Ollama local LLM implementation with function calling.
+        Ollama local LLM implementation with simplified tool calling.
         
-        Ollama supports function calling via the tools parameter.
+        Uses pattern matching for TOOL_CALL instead of native function calling.
         """
         
         messages = [
@@ -508,48 +527,62 @@ Always confirm before starting computationally expensive operations.
         ]
         
         try:
-            # Initial API call with tools
+            # Get LLM response
             response = ollama.chat(
                 model=self.model,
                 messages=messages,
-                tools=self._convert_tools_to_ollama_format(),
                 options={
-                    "temperature": 0.7,
+                    "temperature": 0.3,  # Lower temperature for more consistent tool calling
                     "num_ctx": 4096
                 }
             )
             
-            message = response['message']
+            response_text = response['message']['content']
             
-            # Check if tool call is needed
-            if message.get('tool_calls'):
-                tool_call = message['tool_calls'][0]
-                function_name = tool_call['function']['name']
-                arguments = tool_call['function']['arguments']
+            # Check if response contains TOOL_CALL
+            if "TOOL_CALL:" in response_text:
+                # Extract JSON from TOOL_CALL
+                import re
+                match = re.search(r'TOOL_CALL:\s*({.*?})', response_text, re.DOTALL)
+                if match:
+                    try:
+                        tool_call = json.loads(match.group(1))
+                        function_name = tool_call['name']
+                        arguments = tool_call.get('parameters', {})
+                        
+                        # Execute the tool
+                        print(f"\n🔧 Calling tool: {function_name}")
+                        print(f"📋 Parameters: {arguments}")
+                        
+                        function_result = self._execute_tool(function_name, arguments)
+                        
+                        # Format result for user
+                        result_str = json.dumps(function_result, indent=2, ensure_ascii=False)
+                        
+                        # Ask LLM to explain the result
+                        messages.append({"role": "assistant", "content": response_text})
+                        messages.append({
+                            "role": "user",
+                            "content": f"Tool result:\n{result_str}\n\nPlease explain this result to the user in a friendly way."
+                        })
+                        
+                        explanation = ollama.chat(
+                            model=self.model,
+                            messages=messages,
+                            options={"temperature": 0.7}
+                        )
+                        
+                        return explanation['message']['content']
+                    
+                    except json.JSONDecodeError as e:
+                        return f"❌ Error parsing tool call: {e}\n\nPlease try rephrasing your request."
                 
-                # Execute the function
-                function_result = self._execute_tool(function_name, arguments)
-                
-                # Send function result back to Ollama
-                messages.append(message)
-                messages.append({
-                    "role": "tool",
-                    "content": json.dumps(function_result)
-                })
-                
-                # Get final response
-                second_response = ollama.chat(
-                    model=self.model,
-                    messages=messages
-                )
-                
-                return second_response['message']['content']
+            # No tool call needed, return response as-is
+            return response_text
             
-            else:
-                return message['content']
-                
         except Exception as e:
-            return f"Error calling Ollama: {str(e)}\n\nMake sure Ollama is running (ollama serve)"
+            return f"❌ Error communicating with Ollama: {str(e)}"
+
     
     def _chat_llamacpp(self, user_message: str) -> str:
         """
