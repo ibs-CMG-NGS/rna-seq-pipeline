@@ -437,7 +437,7 @@ def run_pipeline(
 
             status = "dry_run_ok" if result.returncode == 0 else "dry_run_error"
 
-            return {
+            result_dict = {
                 "status": status,
                 "returncode": result.returncode,
                 "dry_run": True,
@@ -446,6 +446,12 @@ def run_pipeline(
                 "issues": issues,
                 "command": " ".join(cmd),
             }
+
+            # If parsing found nothing, include a snippet for debugging
+            if not jobs_by_rule:
+                result_dict["output_snippet"] = combined[:2000]
+
+            return result_dict
         else:
             # Real run: return compact summary + last 50 lines of output
             output_lines = combined.splitlines()

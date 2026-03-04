@@ -855,7 +855,17 @@ Examples (Pipeline Execution):
                         "content": json.dumps(tool_result, ensure_ascii=False),
                     })
 
-                # Ask LLM to summarise all tool results
+                # Ask LLM to summarise all tool results.
+                # Do NOT pass tools= here — we only want a plain text summary,
+                # not another round of tool calls or code-block suggestions.
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "위 도구 실행 결과를 사용자에게 친절하게 한국어로 요약해줘. "
+                        "코드 블록이나 추가 명령어 예시는 포함하지 말고, "
+                        "결과 내용만 자연스럽게 설명해줘."
+                    ),
+                })
                 summary = ollama.chat(
                     model=self.model,
                     messages=messages,
