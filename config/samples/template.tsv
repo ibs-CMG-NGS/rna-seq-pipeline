@@ -14,14 +14,32 @@ sample5	treated	2	data/raw/sample5_R1.fastq.gz	data/raw/sample5_R2.fastq.gz	Trea
 sample6	treated	3	data/raw/sample6_R1.fastq.gz	data/raw/sample6_R2.fastq.gz	Treatment group replicate 3
 
 # 컬럼 설명:
-# - sample_id: 고유한 샘플 식별자 (파일명과 일치해야 함)
-# - condition: 실험 조건 (예: control, treated, timepoint_0h, etc.)
-# - replicate: 생물학적 반복 번호
-# - fastq_r1: Read 1 FASTQ 파일 경로
-# - fastq_r2: Read 2 FASTQ 파일 경로
-# - notes: 추가 메모 (선택사항)
+# ── 필수 컬럼 ──────────────────────────────────────────────────────────────
+# - sample_id:  고유한 샘플 식별자 (결과 디렉토리명과 일치해야 함)
+# - condition:  주요 실험 조건 (예: control, treated, wildtype, KO)
+# - replicate:  생물학적 반복 번호 (정수)
+# - fastq_r1:   Read 1 FASTQ 파일 경로
+# - fastq_r2:   Read 2 FASTQ 파일 경로 (single-end면 생략 또는 빈칸)
+#
+# ── 선택 컬럼 (있으면 자동으로 분석 축으로 인식됨) ──────────────────────
+# - tissue:     조직/세포 유형 (예: Hippocampus, PFC, liver, PBMC)
+# - sex:        성별 (예: Male, Female)
+# - age:        나이/시점 (예: 8w, P21, adult)
+# - treatment:  처리 조건 (예: H2O2, LPS, vehicle)
+# - batch:      실험 배치 번호 (예: batch1, batch2) — batch correction용
+# - 기타:       임의의 컬럼을 추가하면 자동으로 분석 축으로 사용됨
+#
+# ── 기술적 컬럼 (분석 축에서 자동 제외됨) ────────────────────────────────
+# - notes:      추가 메모 (자유 텍스트)
+# - fastq_r1/r2, replicate: 파이프라인 내부 사용
 
 # 사용 예시:
-# 1. 이 파일을 samples.tsv로 복사
-# 2. 실제 샘플 정보에 맞게 수정
-# 3. 하류 분석(differential expression 등)에 활용
+# 1. 이 파일을 config/samples/{project_id}.tsv 로 복사
+# 2. 실제 샘플 정보에 맞게 수정 (컬럼 추가/제거 자유)
+# 3. config/projects/{project_id}.yaml 의 sample_sheet 경로 지정
+# 4. generate_project_summary.py 가 samplesheet를 읽어 자동으로 axes 구성
+
+# 다중 조건 예시 (tissue + sex + condition):
+# sample_id    condition     replicate  tissue       sex     fastq_r1               fastq_r2               notes
+# WT_HPC_M1    wildtype      1          Hippocampus  Male    data/raw/s1_R1.fq.gz   data/raw/s1_R2.fq.gz   ...
+# WT_PFC_F1    wildtype      1          PFC          Female  data/raw/s2_R1.fq.gz   data/raw/s2_R2.fq.gz   ...

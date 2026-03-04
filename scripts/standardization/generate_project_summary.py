@@ -8,8 +8,14 @@ import json
 import argparse
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 import sys
+
+# Columns that are technical/not meaningful as analysis axes
+_TECHNICAL_COLUMNS = {
+    'sample_id', 'fastq_r1', 'fastq_r2', 'fastq_r1_2', 'fastq_r2_2',
+    'notes', 'comments', 'replicate', 'read1', 'read2', 'r1', 'r2'
+}
 
 def collect_sample_manifests(project_dir: Path) -> List[Dict]:
     """Collect all manifest.json files in project directory."""
@@ -47,17 +53,130 @@ def summarize_qc_status(manifests: List[Dict]) -> Dict[str, Any]:
     }
 
 def group_by_condition(manifests: List[Dict]) -> Dict[str, List[str]]:
-    """Group samples by experimental condition."""
+    """Group samples by experimental condition (genotype)."""
     groups = {}
     for m in manifests:
         condition = m.get('sample_metadata', {}).get('condition', 'Unknown')
         sample_id = m.get('sample_id', 'unknown')
-        
+
         if condition not in groups:
             groups[condition] = []
         groups[condition].append(sample_id)
-    
+
     return groups
+
+
+def load_samplesheet(samplesheet_path: Path) -> Dict[str, Dict[str, str]]:
+    """
+    Load samplesheet TSV and return {sample_id: {col: value, ...}}.
+    Skips comment lines (starting with #) and blank lines.
+    """
+    import csv
+
+    samples: Dict[str, Dict[str, str]] = {}
+    with open(samplesheet_path, newline='') as f:
+        # Skip comment lines
+        lines = [l for l in f if not l.startswith('#') and l.strip()]
+
+    reader = csv.DictReader(lines, delimiter='\t')
+    for row in reader:
+        sid = row.get('sample_id', '').strip()
+        if sid:
+            samples[sid] = {k.strip(): v.strip() for k, v in row.items()}
+
+    return samples
+
+
+def group_by_axes(
+    manifests: List[Dict],
+    samplesheet_path: Optional[Path] = None
+) -> Dict[str, Dict[str, List[str]]]:
+    """
+    Group samples by ALL metadata axes found in samplesheet or manifests.
+
+    Priority:
+    1. samplesheet columns  (most reliable, user-defined)
+    2. manifest sample_metadata fields  (set during pipeline run)
+
+    Technical columns (fastq_r1/r2, replicate, notes, etc.) are excluded.
+    Any remaining columns become axes automatically.
+
+    Returns:
+        {
+            "condition":  {"wildtype": [...], "heterozygous": [...]},
+            "tissue":     {"Hippocampus": [...], "PFC": [...]},
+            "sex":        {"Male": [...], "Female": [...]},
+            ...            # any other columns in the samplesheet
+        }
+    """
+    # --- Build per-sample metadata lookup ---
+    # Start from samplesheet (highest priority)
+    sample_meta: Dict[str, Dict[str, str]] = {}
+
+    if samplesheet_path and Path(samplesheet_path).exists():
+        sample_meta = load_samplesheet(Path(samplesheet_path))
+
+    # Merge manifest metadata as fallback for samples missing from samplesheet
+    for m in manifests:
+        sid = m.get('sample_id', 'unknown')
+        manifest_meta = m.get('sample_metadata', {})
+        if sid not in sample_meta:
+            sample_meta[sid] = manifest_meta
+        else:
+            # Fill in fields not present in samplesheet
+            for k, v in manifest_meta.items():
+                if k not in sample_meta[sid]:
+                    sample_meta[sid][k] = v
+
+    # --- Discover all axis columns ---
+    all_columns: set = set()
+    for meta in sample_meta.values():
+        all_columns.update(meta.keys())
+
+    axis_columns = sorted(
+        col for col in all_columns
+        if col.lower() not in _TECHNICAL_COLUMNS and col
+    )
+
+    # --- Build axes dict ---
+    axes: Dict[str, Dict[str, List[str]]] = {}
+    for col in axis_columns:
+        groups: Dict[str, List[str]] = {}
+        for sid, meta in sample_meta.items():
+            val = meta.get(col, '').strip()
+            if val:
+                groups.setdefault(val, []).append(sid)
+        if groups:
+            axes[col] = groups
+
+    return axes
+
+
+# ---------------------------------------------------------------------------
+# Sample-ID parsers — only used as last-resort fallback when BOTH
+# samplesheet and manifest metadata are unavailable for a sample.
+# ---------------------------------------------------------------------------
+
+def _parse_tissue(sample_id: str) -> str:
+    import re
+    m = re.search(r'_(HPC|PFC|CTX|CER|STR|AMY)_', sample_id, re.IGNORECASE)
+    return m.group(1).upper() if m else 'Unknown'
+
+
+def _parse_sex(sample_id: str) -> str:
+    import re
+    m = re.search(r'_\d+([MF])_', sample_id, re.IGNORECASE)
+    if m:
+        return 'Male' if m.group(1).upper() == 'M' else 'Female'
+    return 'Unknown'
+
+
+def _parse_genotype(sample_id: str) -> str:
+    import re
+    m = re.search(r'_(W|H)$', sample_id, re.IGNORECASE)
+    if m:
+        return 'wildtype' if m.group(1).upper() == 'W' else 'heterozygous'
+    return 'Unknown'
 
 def extract_qc_metrics(manifests: List[Dict]) -> Dict[str, Any]:
     """Extract key QC metrics for all samples."""
@@ -117,7 +236,12 @@ def identify_issues(manifests: List[Dict]) -> List[Dict[str, str]]:
     
     return issues
 
-def generate_project_summary(project_dir: Path, project_id: str, output_file: Path) -> None:
+def generate_project_summary(
+    project_dir: Path,
+    project_id: str,
+    output_file: Path,
+    samplesheet_path: Optional[Path] = None
+) -> None:
     """Generate comprehensive project summary."""
     
     print(f"Collecting manifests from: {project_dir}")
@@ -128,15 +252,22 @@ def generate_project_summary(project_dir: Path, project_id: str, output_file: Pa
         sys.exit(1)
     
     print(f"Found {len(manifests)} sample manifests")
+
+    if samplesheet_path:
+        print(f"Using samplesheet: {samplesheet_path}")
+    else:
+        print("⚠️  No samplesheet provided — axes built from manifest metadata only")
     
     # Build summary
     summary = {
         "project_id": project_id,
         "pipeline_type": manifests[0].get('pipeline_type', 'rna-seq') if manifests else 'rna-seq',
         "generated_date": datetime.now().isoformat(),
+        "samplesheet": str(samplesheet_path) if samplesheet_path else None,
         
         "qc_summary": summarize_qc_status(manifests),
         "condition_groups": group_by_condition(manifests),
+        "sample_axes": group_by_axes(manifests, samplesheet_path),
         "aggregate_stats": calculate_aggregate_stats(manifests),
         "sample_metrics": extract_qc_metrics(manifests),
         "issues": identify_issues(manifests),
@@ -185,14 +316,52 @@ def main():
         required=True,
         help='Output path for project_summary.json'
     )
+    parser.add_argument(
+        '--samplesheet',
+        type=Path,
+        default=None,
+        help='Path to sample sheet TSV (recommended). All non-technical columns '
+             'are automatically used as analysis axes (tissue, sex, batch, etc.). '
+             'Falls back to manifest metadata if not provided.'
+    )
+    parser.add_argument(
+        '--config',
+        type=Path,
+        default=None,
+        help='Path to project config YAML. If provided and --samplesheet is not set, '
+             'reads sample_sheet path from config automatically.'
+    )
     
     args = parser.parse_args()
     
     if not args.project_dir.exists():
         print(f"ERROR: Project directory not found: {args.project_dir}", file=sys.stderr)
         sys.exit(1)
-    
-    generate_project_summary(args.project_dir, args.project_id, args.output)
+
+    # Resolve samplesheet: explicit arg > from config > None
+    samplesheet = args.samplesheet
+    if samplesheet is None and args.config and args.config.exists():
+        import yaml
+        with open(args.config) as f:
+            cfg = yaml.safe_load(f)
+        ss_rel = cfg.get('sample_sheet')
+        if ss_rel:
+            # Resolve relative to project root (parent of config file)
+            samplesheet = (args.config.parent.parent / ss_rel).resolve()
+            if not samplesheet.exists():
+                # Try relative to cwd
+                samplesheet = Path(ss_rel).resolve()
+            if samplesheet.exists():
+                print(f"Samplesheet from config: {samplesheet}")
+            else:
+                print(f"⚠️  Samplesheet from config not found: {ss_rel}")
+                samplesheet = None
+
+    if samplesheet and not samplesheet.exists():
+        print(f"ERROR: Samplesheet not found: {samplesheet}", file=sys.stderr)
+        sys.exit(1)
+
+    generate_project_summary(args.project_dir, args.project_id, args.output, samplesheet)
 
 if __name__ == '__main__':
     main()
