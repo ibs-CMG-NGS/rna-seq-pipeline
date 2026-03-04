@@ -519,7 +519,22 @@ def monitor_pipeline(
         }
     """
     try:
-        project_dir = Path(base_results_dir) / project_id
+        base_path = Path(base_results_dir)
+        project_dir = base_path / project_id
+
+        # Path overlap fallback: if user passed the full project path as base_results_dir
+        # (e.g. base=/data_3tb/output/mouse-chd8/ and project_id=mouse-chd8),
+        # project_dir becomes .../mouse-chd8/mouse-chd8 which doesn't exist.
+        # In that case, check if base_path itself contains sample-like subdirs and use it directly.
+        if not project_dir.exists() and base_path.exists():
+            candidate_dirs = [
+                p for p in base_path.iterdir()
+                if p.is_dir()
+                and not p.name.startswith('.')
+                and p.name not in ('logs', 'project_summary')
+            ]
+            if candidate_dirs:
+                project_dir = base_path
 
         # Try to get sample count from config
         n_samples = 0

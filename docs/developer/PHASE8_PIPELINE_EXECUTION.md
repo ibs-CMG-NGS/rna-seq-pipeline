@@ -1,8 +1,8 @@
 # Phase 8: Pipeline Execution Tools
 
 **Objective**: Enable agent to execute full RNA-seq pipeline from raw FASTQ  
-**Status**: ✅ Phase 8A COMPLETE & TESTED  
-**Date**: 2026-03-04
+**Status**: ✅ Phase 8A COMPLETE & TESTED | ✅ Phase 8B COMPLETE & TESTED  
+**Date**: 2026-03-04 (8A) / 2026-03-05 (8B)
 
 ## Testing Results — Phase 8A (2026-03-04)
 
@@ -31,6 +31,45 @@ index_bam: 38 / multiqc: 1 / star_align: 38  →  total: 270
 | `run_pipeline` dry-run 결과를 오류로 오해석 | Snakemake 출력 파싱 → `{total_jobs, jobs_by_rule, note}` 구조체 반환 |
 | Snakemake `Job stats:` 파싱 실패 | 실제 출력 형식(`job / count` 헤더) 확인 후 정규식 수정 |
 | dry-run "missing output" 줄을 오류로 분류 | `issues` 필터에서 `missing` 제외, `note` 필드로 정상 동작 설명 |
+
+---
+
+## Testing Results — Phase 8B (2026-03-05)
+
+**Environment**: mouse-chd8, qwen2.5:32b, 38 samples
+
+| Step | Query | Tool Called | Result |
+|------|-------|-------------|--------|
+| 1 | "리소스 얼마나 필요해?" | `estimate_resources` | ✅ 149GB in → 746GB out, 5-10h, RAM 221GB/Disk 2145GB 여유 확인 |
+| 2 | "샘플 시트 만들어줘" | `create_sample_sheet` | ✅ 38 샘플, wildtype 20 / heterozygous 18 자동 분류, TSV 생성 |
+| 3 | "mouse-chd8 파이프라인 상태 보여줘" | `monitor_pipeline` | ✅ 실행 상태 정확히 반환 (not_started 확인) |
+
+**`estimate_resources` 상세**:
+- 입력: 149GB / 예상 출력: 746GB (×5 추정)
+- 예상 소요 시간: 5-10시간 (8 cores)
+- STAR 메모리: ~30GB (222GB 중 사용)
+- 디스크 여유: 2145GB ✅ (충분)
+
+**`create_sample_sheet` 자동 분류 로직**:
+- 파일명 `_W_` 또는 `_WT_` 패턴 → `wildtype`
+- 파일명 `_H_` 또는 `_HET_` 패턴 → `heterozygous`
+- 파일명 `_KO_` 패턴 → `knockout`
+- 분류 불가 → `unknown` (수동 지정 필요)
+
+**`monitor_pipeline` 감지 항목**:
+```
+manifest.json   → generate_manifest 완료 수
+*.bam           → star_align 완료 수
+logs/cutadapt/  → cutadapt 완료 수
+*_fastqc.zip    → fastqc_raw 완료 수
+multiqc_report  → multiqc 완료 수
+featureCounts   → featurecounts_quant 완료 수
+```
+
+**Bugs fixed during Phase 8B testing**:
+| Bug | Fix |
+|-----|-----|
+| `monitor_pipeline` "결과 디렉토리 없음" 반환 (경로 이중 중첩) | `base_results_dir`에 이미 project_id 포함된 경우 fallback: sample dirs 존재 시 base 자체를 `project_dir`로 사용 |
 
 ---
 
@@ -290,9 +329,9 @@ Agent>
 4. ✅ `run_pipeline()` - 파이프라인 실행
 
 ### Phase 8B (Nice to Have)
-5. ⏳ `monitor_pipeline()` - 실행 모니터링
-6. ⏳ `create_sample_sheet()` - Sample sheet 생성
-7. ⏳ `estimate_resources()` - 리소스 예측
+5. ✅ `monitor_pipeline()` - 실행 모니터링
+6. ✅ `create_sample_sheet()` - Sample sheet 생성
+7. ✅ `estimate_resources()` - 리소스 예측
 
 ---
 
