@@ -677,9 +677,9 @@ class PipelineAgent:
 
 Project Context:
 - Project ID: {self.project_id}
-- Total samples: {self.project_summary['qc_summary']['total_samples']}
-- QC pass rate: {self.project_summary['qc_summary']['pass_rate']}%
-- Conditions: {', '.join(self.project_summary['condition_groups'].keys())}
+- Total samples: {self.project_summary.get('qc_summary', {}).get('total_samples', 'unknown')}
+- QC pass rate: {self.project_summary.get('qc_summary', {}).get('pass_rate', 'N/A')}%
+- Conditions: {', '.join(self.project_summary.get('condition_groups', {}).keys()) or 'not loaded'}
 
 Available Tools:
 {tools_description}
