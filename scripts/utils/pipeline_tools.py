@@ -440,10 +440,12 @@ def run_pipeline(
 
             total_jobs = sum(jobs_by_rule.values())
 
-            # Collect any error/warning lines (limit to 20)
+            # In a dry-run, "missing output" lines are NORMAL (jobs haven't run yet).
+            # Only collect genuine errors: exceptions, tracebacks, config errors.
             issues = [
                 ln.strip() for ln in combined.splitlines()
-                if any(kw in ln.lower() for kw in ('error', 'missing', 'exception', 'traceback'))
+                if any(kw in ln.lower() for kw in ('error:', 'exception', 'traceback', 'syntaxerror'))
+                and 'missing' not in ln.lower()  # exclude normal "Missing files" dry-run output
             ][:20]
 
             status = "dry_run_ok" if result.returncode == 0 else "dry_run_error"
@@ -455,6 +457,12 @@ def run_pipeline(
                 "total_jobs": total_jobs,
                 "jobs_by_rule": jobs_by_rule,
                 "issues": issues,
+                "note": (
+                    "dry_run_ok: All jobs listed above will be executed when the pipeline runs. "
+                    "Missing output files are EXPECTED at this stage (pipeline has not run yet)."
+                    if status == "dry_run_ok" else
+                    "dry_run_error: Snakemake encountered a configuration error. Check issues[]."
+                ),
                 "command": " ".join(cmd),
             }
 
