@@ -213,10 +213,13 @@ else:
             f"  OR use sample sheet: set use_sample_sheet: true in config"
         )
 
-# 로그 디렉토리 자동 생성
-os.makedirs(f"{LOGS_DIR}/fastqc", exist_ok=True)
-os.makedirs(f"{LOGS_DIR}/cutadapt", exist_ok=True)
-os.makedirs(f"{LOGS_DIR}/star", exist_ok=True)
+# 로그 디렉토리 자동 생성 (권한 오류는 경고로 처리 — dry-run에서는 실패해도 무방)
+try:
+    os.makedirs(f"{LOGS_DIR}/fastqc", exist_ok=True)
+    os.makedirs(f"{LOGS_DIR}/cutadapt", exist_ok=True)
+    os.makedirs(f"{LOGS_DIR}/star", exist_ok=True)
+except PermissionError as _e:
+    print(f"  [WARNING] Could not create log dirs: {_e} (OK for dry-run)")
 
 # 디버깅: 경로 및 샘플 정보 출력
 print(f"=" * 80)
@@ -247,9 +250,9 @@ else:
     print(f"  WARNING: No samples found in {RAW_DATA_DIR}")
 print(f"=" * 80)
 
-# 경로 변수 (config.yaml에서 로드)
-STAR_INDEX = config["star_index"]
-ANNOTATION_GTF = config["annotation_gtf"]
+# 경로 변수 (config.yaml에서 로드) — 두 가지 키명 모두 지원
+STAR_INDEX = config.get("star_index", config.get("STAR_INDEX", ""))
+ANNOTATION_GTF = config.get("annotation_gtf", config.get("genes_gtf", config.get("ANNOTATION_GTF", "")))
 
 
 # --- 2. 파이프라인의 최종 목표 정의 (Rule all) ---
