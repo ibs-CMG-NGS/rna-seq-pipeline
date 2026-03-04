@@ -255,9 +255,9 @@ def main():
     )
     parser.add_argument(
         '--axis',
-        choices=['genotype', 'tissue', 'sex'],
-        default='genotype',
-        help='Axis for compare_axis query (default: genotype)'
+        default='condition',
+        help='Axis for compare_axis query (e.g. condition, tissue, sex). '
+             'Any column from the samplesheet is valid.'
     )
     parser.add_argument(
         '--filter',

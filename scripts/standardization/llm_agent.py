@@ -242,6 +242,50 @@ class PipelineAgent:
                     "required": ["project_id"]
                 }
             },
+            # Multi-axis analysis tools
+            {
+                "name": "get_sample_axes",
+                "description": "Get all experimental axes (genotype, tissue, sex) and sample counts per group",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            },
+            {
+                "name": "compare_by_axis",
+                "description": "Compare QC metrics grouped by a specific axis (e.g. condition, tissue, sex), with optional pre-filtering by other axes. Use this instead of compare_conditions when the user wants to filter by tissue, sex, or any other axis.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "axis": {
+                            "type": "string",
+                            "description": "Axis to group comparison by. Any samplesheet column is valid: 'condition', 'tissue', 'sex', 'age', etc."
+                        },
+                        "filters": {
+                            "type": "object",
+                            "description": "Optional filters to apply before comparison. e.g. {\"tissue\": \"Hippocampus\"} or {\"condition\": \"wildtype\"}",
+                            "additionalProperties": {"type": "string"}
+                        }
+                    },
+                    "required": ["axis"]
+                }
+            },
+            {
+                "name": "filter_samples",
+                "description": "Get list of samples matching multiple axis filters simultaneously",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filters": {
+                            "type": "object",
+                            "description": "Axis filters e.g. {\"tissue\": \"HPC\", \"sex\": \"Male\", \"genotype\": \"wildtype\"}",
+                            "additionalProperties": {"type": "string"}
+                        }
+                    },
+                    "required": ["filters"]
+                }
+            },
             # Phase 8A: Pipeline Execution Tools
             {
                 "name": "create_project_config",
@@ -451,6 +495,44 @@ class PipelineAgent:
             }
         
         # Phase 8A: Pipeline Execution Tools
+        elif tool_name == "get_sample_axes":
+            result = subprocess.run([
+                "python", "scripts/standardization/agent_query.py",
+                "--project-summary", str(self.project_summary_path),
+                "--query", "axes"
+            ], capture_output=True, text=True, cwd=str(_project_root))
+            return json.loads(result.stdout) if result.stdout else {"error": result.stderr}
+
+        elif tool_name == "compare_by_axis":
+            axis = arguments.get("axis", "genotype")
+            filters = arguments.get("filters", {})
+            
+            cmd = [
+                "python", "scripts/standardization/agent_query.py",
+                "--project-summary", str(self.project_summary_path),
+                "--query", "compare_axis",
+                "--axis", axis
+            ]
+            for k, v in (filters or {}).items():
+                cmd += ["--filter", f"{k}={v}"]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(_project_root))
+            return json.loads(result.stdout) if result.stdout else {"error": result.stderr}
+
+        elif tool_name == "filter_samples":
+            filters = arguments.get("filters", {})
+            
+            cmd = [
+                "python", "scripts/standardization/agent_query.py",
+                "--project-summary", str(self.project_summary_path),
+                "--query", "filter"
+            ]
+            for k, v in filters.items():
+                cmd += ["--filter", f"{k}={v}"]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(_project_root))
+            return json.loads(result.stdout) if result.stdout else {"error": result.stderr}
+
         elif tool_name == "create_project_config":
             try:
                 from scripts.utils.pipeline_tools import create_project_config
@@ -524,6 +606,23 @@ Examples (Analysis Management):
 - User: "Ctrl_1 샘플 정보 알려줘" → TOOL_CALL: {{"name": "get_sample_details", "parameters": {{"sample_id": "Ctrl_1"}}}}
 - User: "경로 검증해줘" → TOOL_CALL: {{"name": "validate_paths", "parameters": {{"project_id": "{self.project_id}"}}}}
 - User: "DE 분석 준비해줘" → TOOL_CALL: {{"name": "prepare_de_analysis", "parameters": {{"project_id": "{self.project_id}"}}}}
+
+Examples (Multi-axis Analysis):
+- User: "실험 조건 축 보여줘" / "어떤 그룹이 있어?" → TOOL_CALL: {{"name": "get_sample_axes", "parameters": {{}}}}
+- User: "HPC와 PFC 비교해줘" → TOOL_CALL: {{"name": "compare_by_axis", "parameters": {{"axis": "tissue"}}}}
+- User: "Male vs Female 비교해줘" → TOOL_CALL: {{"name": "compare_by_axis", "parameters": {{"axis": "sex"}}}}
+- User: "HPC에서만 wildtype vs heterozygous 비교해줘" → TOOL_CALL: {{"name": "compare_by_axis", "parameters": {{"axis": "condition", "filters": {{"tissue": "Hippocampus"}}}}}}
+- User: "PFC wildtype만 비교해줘" / "PFC에서 조건 비교" → TOOL_CALL: {{"name": "compare_by_axis", "parameters": {{"axis": "condition", "filters": {{"tissue": "Prefrontal Cortex"}}}}}}
+- User: "Female 샘플만 tissue 비교해줘" → TOOL_CALL: {{"name": "compare_by_axis", "parameters": {{"axis": "tissue", "filters": {{"sex": "Female"}}}}}}
+- User: "Male HPC wildtype 샘플 목록 보여줘" → TOOL_CALL: {{"name": "filter_samples", "parameters": {{"filters": {{"tissue": "Hippocampus", "sex": "Male", "condition": "wildtype"}}}}}}
+- User: "PFC heterozygous 샘플 뭐 있어?" → TOOL_CALL: {{"name": "filter_samples", "parameters": {{"filters": {{"tissue": "Prefrontal Cortex", "condition": "heterozygous"}}}}}}
+
+CRITICAL RULE for filtering:
+- If user mentions a specific tissue (HPC, PFC, Hippocampus, Prefrontal Cortex) → use compare_by_axis with filters, NOT compare_conditions
+- If user mentions a specific sex (Male, Female) → use compare_by_axis with filters
+- Available tissue values: "Hippocampus" (for HPC), "Prefrontal Cortex" (for PFC)
+- Available condition values: "wildtype", "heterozygous"
+- Available sex values: "Male", "Female"
 
 Examples (Pipeline Execution):
 - User: "새 프로젝트 설정 만들어줘. test-2026, 데이터는 /data/raw/" → TOOL_CALL: {{"name": "create_project_config", "parameters": {{"project_id": "test-2026", "data_dir": "/data/raw", "results_dir": "/data/output/test-2026", "species": "human"}}}}
