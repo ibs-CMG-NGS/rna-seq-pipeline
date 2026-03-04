@@ -97,7 +97,7 @@ class PipelineAgent:
         # Initialize LLM client
         if llm_provider == "ollama" and HAS_OLLAMA:
             self.llm_client = ollama
-            self.model = model or "llama3.1:8b"  # Default to Llama 3.1 8B
+            self.model = model or "qwen2.5:32b"  # Default to Qwen2.5 32B
             print(f"Using local Ollama model: {self.model}")
             
         elif llm_provider == "llamacpp" and HAS_LLAMACPP:
@@ -775,77 +775,148 @@ Be conversational, clear, and actionable. When showing numbers, include units an
         # Implementation details depend on Anthropic's function calling API
         pass
     
+    # Models known to support Ollama native tool calling
+    _NATIVE_TOOL_CALLING_MODELS = {
+        "qwen2.5", "qwen2", "llama3.1", "llama3.2", "llama3.3",
+        "mistral", "mistral-nemo", "mixtral", "firefunction",
+        "command-r", "smollm2", "hermes3", "granite3",
+    }
+
+    def _supports_native_tool_calling(self) -> bool:
+        """Check if the current model supports Ollama native tool calling."""
+        model_base = self.model.split(":")[0].lower()
+        return any(model_base.startswith(m) for m in self._NATIVE_TOOL_CALLING_MODELS)
+
     def _chat_ollama(self, user_message: str) -> str:
         """
-        Ollama local LLM implementation with simplified tool calling.
-        
-        Uses pattern matching for TOOL_CALL instead of native function calling.
+        Ollama local LLM implementation.
+
+        Strategy:
+        - Models that support native tool calling (qwen2.5, llama3.1, etc.):
+          Use Ollama tools= API for reliable structured function calls.
+        - Older / smaller models: fall back to TOOL_CALL text-pattern matching.
         """
-        
+        if self._supports_native_tool_calling():
+            return self._chat_ollama_native_tools(user_message)
+        else:
+            return self._chat_ollama_text_pattern(user_message)
+
+    def _chat_ollama_native_tools(self, user_message: str) -> str:
+        """
+        Ollama native tool calling (for models like qwen2.5, llama3.1+).
+
+        Uses the tools= parameter in ollama.chat(), which guarantees
+        structured JSON output — no regex parsing needed.
+        """
         messages = [
-            {
-                "role": "system",
-                "content": self._build_system_prompt()
-            },
-            {
-                "role": "user",
-                "content": user_message
-            }
+            {"role": "system", "content": self._build_system_prompt()},
+            {"role": "user",   "content": user_message},
         ]
-        
+        ollama_tools = self._convert_tools_to_ollama_format()
+
         try:
-            # Get LLM response
             response = ollama.chat(
                 model=self.model,
                 messages=messages,
-                options={
-                    "temperature": 0.3,  # Lower temperature for more consistent tool calling
-                    "num_ctx": 4096
-                }
+                tools=ollama_tools,
+                options={"temperature": 0.1, "num_ctx": 8192},
             )
-            
-            response_text = response['message']['content']
-            
-            # Check if response contains TOOL_CALL
+
+            msg = response["message"]
+
+            # ── Native tool call returned ──────────────────────────────────
+            tool_calls = msg.get("tool_calls") or []
+            if tool_calls:
+                results = []
+                for tc in tool_calls:
+                    fn    = tc["function"]
+                    name  = fn["name"]
+                    args  = fn.get("arguments", {})
+                    if isinstance(args, str):
+                        args = json.loads(args)
+
+                    print(f"\n🔧 Calling tool: {name}")
+                    print(f"📋 Parameters: {args}")
+
+                    tool_result = self._execute_tool(name, args)
+                    results.append({"tool": name, "result": tool_result})
+
+                    # Append tool turn to conversation
+                    messages.append({"role": "assistant", "content": None,
+                                     "tool_calls": [tc]})
+                    messages.append({
+                        "role": "tool",
+                        "content": json.dumps(tool_result, ensure_ascii=False),
+                    })
+
+                # Ask LLM to summarise all tool results
+                summary = ollama.chat(
+                    model=self.model,
+                    messages=messages,
+                    options={"temperature": 0.7, "num_ctx": 8192},
+                )
+                return summary["message"]["content"]
+
+            # ── Plain text reply (no tool needed) ─────────────────────────
+            return msg.get("content", "")
+
+        except Exception as e:
+            return f"❌ Error communicating with Ollama: {e}"
+
+    def _chat_ollama_text_pattern(self, user_message: str) -> str:
+        """
+        Fallback: text-pattern TOOL_CALL matching for models without
+        native tool calling support.
+        """
+        messages = [
+            {"role": "system", "content": self._build_system_prompt()},
+            {"role": "user",   "content": user_message},
+        ]
+
+        try:
+            response = ollama.chat(
+                model=self.model,
+                messages=messages,
+                options={"temperature": 0.3, "num_ctx": 4096},
+            )
+
+            response_text = response["message"]["content"]
+
             if "TOOL_CALL:" in response_text:
                 import re
                 tool_call = self._extract_tool_call(response_text)
                 if tool_call:
-                    function_name = tool_call['name']
-                    arguments = tool_call.get('parameters', {})
-                    
-                    # Execute the tool
+                    function_name = tool_call["name"]
+                    arguments     = tool_call.get("parameters", {})
+
                     print(f"\n🔧 Calling tool: {function_name}")
                     print(f"📋 Parameters: {arguments}")
-                    
+
                     function_result = self._execute_tool(function_name, arguments)
-                    
-                    # Format result for user
-                    result_str = json.dumps(function_result, indent=2, ensure_ascii=False)
-                    
-                    # Ask LLM to explain the result
+                    result_str      = json.dumps(function_result, indent=2, ensure_ascii=False)
+
                     messages.append({"role": "assistant", "content": response_text})
                     messages.append({
                         "role": "user",
-                        "content": f"Tool result:\n{result_str}\n\nPlease explain this result to the user in a friendly way."
+                        "content": (
+                            f"Tool result:\n{result_str}\n\n"
+                            "Please explain this result to the user in a friendly way."
+                        ),
                     })
-                    
+
                     explanation = ollama.chat(
                         model=self.model,
                         messages=messages,
-                        options={"temperature": 0.7}
+                        options={"temperature": 0.7},
                     )
-                    
-                    return explanation['message']['content']
+                    return explanation["message"]["content"]
                 else:
-                    # TOOL_CALL found but couldn't parse — return raw response
                     return response_text
-                
-            # No tool call needed, return response as-is
+
             return response_text
-            
+
         except Exception as e:
-            return f"❌ Error communicating with Ollama: {str(e)}"
+            return f"❌ Error communicating with Ollama: {e}"
 
     
     def _chat_llamacpp(self, user_message: str) -> str:
