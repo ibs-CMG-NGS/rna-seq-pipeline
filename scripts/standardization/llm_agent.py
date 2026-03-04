@@ -577,14 +577,19 @@ class PipelineAgent:
         else:
             return {"error": f"Unknown tool: {tool_name}"}
     
-    def _build_system_prompt(self) -> str:
-        """Build system prompt with project context and tool usage instructions."""
+    def _build_system_prompt(self, native_tools: bool = False) -> str:
+        """Build system prompt with project context and tool usage instructions.
+        
+        Args:
+            native_tools: If True, omit TOOL_CALL text examples (tools are handled
+                          by the API layer, not by the LLM's text output).
+        """
         tools_description = "\n".join([
             f"- {tool['name']}: {tool['description']}"
             for tool in self.tools
         ])
-        
-        return f"""You are an AI assistant for RNA-seq analysis pipeline management.
+
+        base = f"""You are an AI assistant for RNA-seq analysis pipeline management.
 
 Project Context:
 - Project ID: {self.project_id}
@@ -595,50 +600,51 @@ Project Context:
 Available Tools:
 {tools_description}
 
-HOW TO USE TOOLS:
-When a user asks for information or action, respond with a tool call in JSON format:
-```
-TOOL_CALL: {{"name": "tool_name", "parameters": {{"param1": "value1"}}}}
-```
-
-Examples (Analysis Management):
-- User: "QC 상태 보여줘" → TOOL_CALL: {{"name": "get_project_status", "parameters": {{}}}}
-- User: "Ctrl_1 샘플 정보 알려줘" → TOOL_CALL: {{"name": "get_sample_details", "parameters": {{"sample_id": "Ctrl_1"}}}}
-- User: "경로 검증해줘" → TOOL_CALL: {{"name": "validate_paths", "parameters": {{"project_id": "{self.project_id}"}}}}
-- User: "DE 분석 준비해줘" → TOOL_CALL: {{"name": "prepare_de_analysis", "parameters": {{"project_id": "{self.project_id}"}}}}
-
-Examples (Multi-axis Analysis):
-- User: "실험 조건 축 보여줘" / "어떤 그룹이 있어?" → TOOL_CALL: {{"name": "get_sample_axes", "parameters": {{}}}}
-- User: "HPC와 PFC 비교해줘" → TOOL_CALL: {{"name": "compare_by_axis", "parameters": {{"axis": "tissue"}}}}
-- User: "Male vs Female 비교해줘" → TOOL_CALL: {{"name": "compare_by_axis", "parameters": {{"axis": "sex"}}}}
-- User: "HPC에서만 wildtype vs heterozygous 비교해줘" → TOOL_CALL: {{"name": "compare_by_axis", "parameters": {{"axis": "condition", "filters": {{"tissue": "Hippocampus"}}}}}}
-- User: "PFC wildtype만 비교해줘" / "PFC에서 조건 비교" → TOOL_CALL: {{"name": "compare_by_axis", "parameters": {{"axis": "condition", "filters": {{"tissue": "Prefrontal Cortex"}}}}}}
-- User: "Female 샘플만 tissue 비교해줘" → TOOL_CALL: {{"name": "compare_by_axis", "parameters": {{"axis": "tissue", "filters": {{"sex": "Female"}}}}}}
-- User: "Male HPC wildtype 샘플 목록 보여줘" → TOOL_CALL: {{"name": "filter_samples", "parameters": {{"filters": {{"tissue": "Hippocampus", "sex": "Male", "condition": "wildtype"}}}}}}
-- User: "PFC heterozygous 샘플 뭐 있어?" → TOOL_CALL: {{"name": "filter_samples", "parameters": {{"filters": {{"tissue": "Prefrontal Cortex", "condition": "heterozygous"}}}}}}
-
-CRITICAL RULE for filtering:
+FILTERING RULES:
 - If user mentions a specific tissue (HPC, PFC, Hippocampus, Prefrontal Cortex) → use compare_by_axis with filters, NOT compare_conditions
 - If user mentions a specific sex (Male, Female) → use compare_by_axis with filters
 - Available tissue values: "Hippocampus" (for HPC), "Prefrontal Cortex" (for PFC)
 - Available condition values: "wildtype", "heterozygous"
 - Available sex values: "Male", "Female"
 
-Examples (Pipeline Execution):
-- User: "새 프로젝트 설정 만들어줘. test-2026, 데이터는 /data/raw/" → TOOL_CALL: {{"name": "create_project_config", "parameters": {{"project_id": "test-2026", "data_dir": "/data/raw", "results_dir": "/data/output/test-2026", "species": "human"}}}}
-- User: "/data/raw/ 폴더에서 FASTQ 파일 찾아줘" → TOOL_CALL: {{"name": "detect_fastq_files", "parameters": {{"data_dir": "/data/raw"}}}}
-- User: "입력 데이터 검증해줘" → TOOL_CALL: {{"name": "validate_input_data", "parameters": {{"config_file": "config/projects/test-2026.yaml"}}}}
-- User: "파이프라인 dry-run 해줘" → TOOL_CALL: {{"name": "run_pipeline", "parameters": {{"config_file": "config/projects/test-2026.yaml", "dry_run": true}}}}
-- User: "파이프라인 실행해줘" → TOOL_CALL: {{"name": "run_pipeline", "parameters": {{"config_file": "config/projects/test-2026.yaml", "dry_run": false, "cores": 8}}}}
-
 IMPORTANT:
-1. Always use TOOL_CALL format when action is needed
+1. Call the appropriate tool when action is needed
 2. Extract parameters from user's natural language
 3. If user's intent is unclear, ask for clarification
-4. After tool execution, explain the results conversationally
+4. After tool execution, explain the results conversationally in Korean
 
 Be conversational, clear, and actionable. When showing numbers, include units and context.
 """
+
+        if native_tools:
+            # For native tool calling, the API handles tool dispatch.
+            # Do NOT include TOOL_CALL text examples — they confuse the model
+            # into printing raw JSON in its reply instead of calling the API.
+            return base
+
+        # Text-pattern fallback: include explicit TOOL_CALL examples
+        examples = """
+HOW TO USE TOOLS:
+When a user asks for information or action, respond with a tool call in JSON format:
+```
+TOOL_CALL: {"name": "tool_name", "parameters": {"param1": "value1"}}
+```
+
+Examples (Analysis Management):
+- User: "QC 상태 보여줘" → TOOL_CALL: {{"name": "get_project_status", "parameters": {{}}}}
+- User: "Ctrl_1 샘플 정보 알려줘" → TOOL_CALL: {{"name": "get_sample_details", "parameters": {{"sample_id": "Ctrl_1"}}}}
+- User: "DE 분석 준비해줘" → TOOL_CALL: {{"name": "prepare_de_analysis", "parameters": {{"project_id": "{self.project_id}"}}}}
+
+Examples (Multi-axis Analysis):
+- User: "어떤 그룹이 있어?" → TOOL_CALL: {{"name": "get_sample_axes", "parameters": {{}}}}
+- User: "HPC에서만 wildtype vs heterozygous 비교해줘" → TOOL_CALL: {{"name": "compare_by_axis", "parameters": {{"axis": "condition", "filters": {{"tissue": "Hippocampus"}}}}}}
+- User: "Male HPC wildtype 샘플 목록" → TOOL_CALL: {{"name": "filter_samples", "parameters": {{"filters": {{"tissue": "Hippocampus", "sex": "Male", "condition": "wildtype"}}}}}}
+
+Examples (Pipeline Execution):
+- User: "/data/raw/ 폴더에서 FASTQ 파일 찾아줘" → TOOL_CALL: {{"name": "detect_fastq_files", "parameters": {{"data_dir": "/data/raw"}}}}
+- User: "파이프라인 dry-run 해줘" → TOOL_CALL: {{"name": "run_pipeline", "parameters": {{"config_file": "config/projects/test-2026.yaml", "dry_run": true}}}}
+"""
+        return base + examples
 
     def _extract_tool_call(self, text: str) -> Optional[Dict]:
         """
@@ -809,7 +815,7 @@ Be conversational, clear, and actionable. When showing numbers, include units an
         structured JSON output — no regex parsing needed.
         """
         messages = [
-            {"role": "system", "content": self._build_system_prompt()},
+            {"role": "system", "content": self._build_system_prompt(native_tools=True)},
             {"role": "user",   "content": user_message},
         ]
         ollama_tools = self._convert_tools_to_ollama_format()
@@ -869,7 +875,7 @@ Be conversational, clear, and actionable. When showing numbers, include units an
         native tool calling support.
         """
         messages = [
-            {"role": "system", "content": self._build_system_prompt()},
+            {"role": "system", "content": self._build_system_prompt(native_tools=False)},
             {"role": "user",   "content": user_message},
         ]
 

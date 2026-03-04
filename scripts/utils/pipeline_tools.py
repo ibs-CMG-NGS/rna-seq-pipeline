@@ -393,26 +393,70 @@ def run_pipeline(
         )
         
         # Parse output
-        output = result.stdout + result.stderr
-        
-        # Extract job count from dry-run
-        jobs = 0
+        stdout = result.stdout
+        stderr = result.stderr
+        combined = stdout + stderr
+
         if dry_run:
-            match = re.search(r'Job counts:.*?(\d+)', output, re.DOTALL)
-            if match:
-                # Sum all job counts
-                job_counts = re.findall(r'\s+(\d+)', output[match.start():])
-                jobs = sum(int(j) for j in job_counts)
-        
-        status = "dry_run" if dry_run else ("success" if result.returncode == 0 else "error")
-        
-        return {
-            "status": status,
-            "returncode": result.returncode,
-            "jobs": jobs if dry_run else None,
-            "output": output,
-            "command": " ".join(cmd)
-        }
+            # Parse dry-run summary instead of dumping raw output
+            jobs_by_rule = {}
+
+            # Snakemake ≥7: "Job stats:" table  (rule / count / min threads)
+            stats_match = re.search(
+                r'Job stats:\s*\nrule\s+count\s+\S+\s*\n([-\s\w]+?)(?=\n\S|\Z)',
+                combined, re.DOTALL
+            )
+            if stats_match:
+                for line in stats_match.group(1).strip().splitlines():
+                    parts = line.split()
+                    if len(parts) >= 2 and parts[0] not in ('total', 'rule'):
+                        try:
+                            jobs_by_rule[parts[0]] = int(parts[1])
+                        except ValueError:
+                            pass
+
+            # Fallback: "Job counts:" table (Snakemake ≤6)
+            if not jobs_by_rule:
+                counts_match = re.search(r'Job counts:\s*\ncount\s+jobs\s*\n([\s\S]+?)(?=\n\S|\Z)', combined)
+                if counts_match:
+                    for line in counts_match.group(1).strip().splitlines():
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            try:
+                                jobs_by_rule[parts[1]] = int(parts[0])
+                            except ValueError:
+                                pass
+
+            total_jobs = sum(jobs_by_rule.values())
+
+            # Collect any error/warning lines (limit to 20)
+            issues = [
+                ln.strip() for ln in combined.splitlines()
+                if any(kw in ln.lower() for kw in ('error', 'missing', 'exception', 'traceback'))
+            ][:20]
+
+            status = "dry_run_ok" if result.returncode == 0 else "dry_run_error"
+
+            return {
+                "status": status,
+                "returncode": result.returncode,
+                "dry_run": True,
+                "total_jobs": total_jobs,
+                "jobs_by_rule": jobs_by_rule,
+                "issues": issues,
+                "command": " ".join(cmd),
+            }
+        else:
+            # Real run: return compact summary + last 50 lines of output
+            output_lines = combined.splitlines()
+            status = "success" if result.returncode == 0 else "error"
+            return {
+                "status": status,
+                "returncode": result.returncode,
+                "dry_run": False,
+                "output_tail": "\n".join(output_lines[-50:]),
+                "command": " ".join(cmd),
+            }
     
     except Exception as e:
         return {
