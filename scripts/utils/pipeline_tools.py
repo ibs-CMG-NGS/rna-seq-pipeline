@@ -401,17 +401,28 @@ def run_pipeline(
             # Parse dry-run summary instead of dumping raw output
             jobs_by_rule = {}
 
-            # Snakemake ≥7: "Job stats:" table  (rule / count / min threads)
-            stats_match = re.search(
-                r'Job stats:\s*\nrule\s+count\s+\S+\s*\n([-\s\w]+?)(?=\n\S|\Z)',
-                combined, re.DOTALL
-            )
+            # Snakemake ≥7: "Job stats:" table
+            # Format:
+            #   Job stats:
+            #   job                      count
+            #   ---------------------  -------
+            #   all                          1
+            #   cutadapt                    38
+            #   ...
+            stats_match = re.search(r'Job stats:\s*\n', combined)
             if stats_match:
-                for line in stats_match.group(1).strip().splitlines():
+                block = combined[stats_match.end():]
+                for line in block.splitlines():
+                    # Stop at blank line or next section header
+                    if not line.strip() or line.startswith('=') or line.startswith('Building'):
+                        break
+                    # Skip header / separator lines
+                    if re.match(r'^[-\s]+$', line) or line.lstrip().startswith('job') or line.lstrip().startswith('rule'):
+                        continue
                     parts = line.split()
-                    if len(parts) >= 2 and parts[0] not in ('total', 'rule'):
+                    if len(parts) >= 2:
                         try:
-                            jobs_by_rule[parts[0]] = int(parts[1])
+                            jobs_by_rule[parts[0]] = int(parts[-1])
                         except ValueError:
                             pass
 
