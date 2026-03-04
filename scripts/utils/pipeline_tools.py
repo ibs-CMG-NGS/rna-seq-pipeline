@@ -393,10 +393,21 @@ def run_pipeline(
                 "message": f"Config file not found: {config_file}"
             }
         
-        # Build snakemake command
+        # Resolve pipeline root: walk up from config_file until Snakefile is found
+        # This ensures snakemake is launched from the repo root regardless of CWD
+        pipeline_root = config_path.resolve().parent
+        for _ in range(5):
+            if (pipeline_root / "Snakefile").exists():
+                break
+            pipeline_root = pipeline_root.parent
+        else:
+            # Fallback: use current working directory
+            pipeline_root = Path.cwd()
+
+        # Use absolute path for config so it works from any cwd
         cmd = [
             "snakemake",
-            "--configfile", str(config_path),
+            "--configfile", str(config_path.resolve()),
             "--cores", str(cores)
         ]
         
@@ -409,12 +420,12 @@ def run_pipeline(
         if force:
             cmd.append("--forceall")
         
-        # Execute
+        # Execute from pipeline root (where Snakefile lives)
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            cwd=Path.cwd()
+            cwd=str(pipeline_root)
         )
         
         # Parse output
@@ -482,18 +493,19 @@ def run_pipeline(
                 "total_jobs": total_jobs,
                 "jobs_by_rule": jobs_by_rule,
                 "issues": issues,
+                "pipeline_root": str(pipeline_root),
                 "note": (
                     "dry_run_ok: All jobs listed above will be executed when the pipeline runs. "
                     "Missing output files are EXPECTED at this stage (pipeline has not run yet)."
                     if status == "dry_run_ok" else
-                    "dry_run_error: Snakemake encountered a configuration error. Check issues[]."
+                    "dry_run_error: Snakemake encountered a configuration error. Check issues[] and stderr_snippet."
                 ),
                 "command": " ".join(cmd),
             }
 
-            # If parsing found nothing, include a snippet for debugging
-            if not jobs_by_rule:
-                result_dict["output_snippet"] = combined[:2000]
+            # Always include stderr snippet for debugging (first 3000 chars)
+            if result.returncode != 0 or not jobs_by_rule:
+                result_dict["stderr_snippet"] = (stderr or stdout)[:3000]
 
             return result_dict
         else:
