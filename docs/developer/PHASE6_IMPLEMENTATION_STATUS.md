@@ -41,11 +41,16 @@ Successfully implemented local LLM support for natural language pipeline queries
   - `compare_by_axis` — Compare QC metrics by any axis with optional filters
   - `filter_samples` — Filter samples by multiple axes simultaneously
 
-  **Pipeline execution tools (Phase 8A)**:
+  **Pipeline execution tools (Phase 8A — ✅ tested)**:
   - `create_project_config` — Generate config.yaml from parameters
   - `detect_fastq_files` — Scan directory for FASTQ files
   - `validate_input_data` — Pre-flight validation
   - `run_pipeline` — Execute Snakemake workflow
+
+  **Pipeline monitoring tools (Phase 8B — ✅ tested)**:
+  - `monitor_pipeline` — Check pipeline status by inspecting output files
+  - `create_sample_sheet` — Generate sample metadata TSV from FASTQ scan
+  - `estimate_resources` — Estimate runtime, disk, RAM requirements
 
 - ✅ Interactive chat mode
 - ✅ Single query mode
@@ -249,7 +254,7 @@ python scripts/standardization/llm_agent.py \
 - **Context Preservation**: System prompts include project-specific info
 
 ### Code Quality
-- 582 lines of well-documented Python
+- 1,206 lines of well-documented Python (llm_agent.py — grown from 582 through Phase 8B)
 - Clear separation of concerns (init, tools, execution, chat)
 - Type hints for key parameters
 - Comprehensive docstrings
@@ -359,8 +364,11 @@ User Interface
 ### Phase 1: Internal Testing ✅ COMPLETE (2026-03-04)
 1. ✅ Install Ollama on development server
 2. ✅ Test with mouse-chd8 project (38 samples)
-3. ✅ Validate all 9 tool functions
+3. ✅ Validate all 9 tool functions (Phase 6/6.1)
 4. ✅ Multi-axis filtering (tissue, sex, condition) verified
+5. ✅ Phase 8A pipeline execution tools tested (4 tools)
+6. ✅ Phase 8B pipeline monitoring tools tested (3 tools)
+7. ✅ Total: **17 tools** implemented and verified
 
 ### Phase 2: Beta Testing (Next)
 1. Share with 2-3 early adopters
@@ -384,7 +392,9 @@ Multi-axis experimental design support (tissue × sex × genotype × ...) is ful
 1. ~~Install Ollama on server~~ ✅
 2. ~~Test with mouse-chd8 project~~ ✅
 3. Beta testing with lab members
-4. Phase 8A pipeline execution tools testing
+4. ~~Phase 8A pipeline execution tools testing~~ ✅ Complete (2026-03-04)
+5. ~~Phase 8B pipeline monitoring tools testing~~ ✅ Complete (2026-03-05)
+6. Phase 8C: Real pipeline run (actual execution, not dry-run)
 
 ---
 
