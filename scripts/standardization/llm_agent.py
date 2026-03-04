@@ -335,6 +335,50 @@ class PipelineAgent:
                     },
                     "required": ["config_file"]
                 }
+            },
+            # Phase 8B tools
+            {
+                "name": "monitor_pipeline",
+                "description": "Check pipeline execution status and progress by inspecting output files",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "project_id": {"type": "string", "description": "Project identifier"},
+                        "base_results_dir": {"type": "string", "description": "Base results directory"},
+                        "config_file": {"type": "string", "description": "Path to config.yaml (optional)"}
+                    },
+                    "required": ["project_id", "base_results_dir"]
+                }
+            },
+            {
+                "name": "create_sample_sheet",
+                "description": "Generate a sample metadata TSV from detected FASTQ files, optionally assigning conditions",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "project_id": {"type": "string", "description": "Project identifier"},
+                        "data_dir": {"type": "string", "description": "Directory containing FASTQ files"},
+                        "conditions": {
+                            "type": "object",
+                            "description": "Optional condition mapping: {condition_name: [sample_id_substrings]}",
+                            "additionalProperties": {"type": "array", "items": {"type": "string"}}
+                        },
+                        "output_path": {"type": "string", "description": "Output TSV path (optional)"}
+                    },
+                    "required": ["project_id", "data_dir"]
+                }
+            },
+            {
+                "name": "estimate_resources",
+                "description": "Estimate runtime, disk and RAM requirements before pipeline execution",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "config_file": {"type": "string", "description": "Path to config.yaml"},
+                        "cores": {"type": "integer", "description": "Number of cores to use", "default": 8}
+                    },
+                    "required": ["config_file"]
+                }
             }
         ]
     
@@ -573,7 +617,41 @@ class PipelineAgent:
                 return result
             except Exception as e:
                 return {"status": "error", "message": str(e)}
-        
+
+        # ── Phase 8B tools ────────────────────────────────────────────────
+        elif tool_name == "monitor_pipeline":
+            try:
+                from scripts.utils.pipeline_tools import monitor_pipeline
+                return monitor_pipeline(
+                    project_id=arguments['project_id'],
+                    base_results_dir=arguments['base_results_dir'],
+                    config_file=arguments.get('config_file'),
+                )
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+
+        elif tool_name == "create_sample_sheet":
+            try:
+                from scripts.utils.pipeline_tools import create_sample_sheet
+                return create_sample_sheet(
+                    project_id=arguments['project_id'],
+                    data_dir=arguments['data_dir'],
+                    conditions=arguments.get('conditions'),
+                    output_path=arguments.get('output_path'),
+                )
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+
+        elif tool_name == "estimate_resources":
+            try:
+                from scripts.utils.pipeline_tools import estimate_resources
+                return estimate_resources(
+                    config_file=arguments['config_file'],
+                    cores=arguments.get('cores', 8),
+                )
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+
         else:
             return {"error": f"Unknown tool: {tool_name}"}
     
