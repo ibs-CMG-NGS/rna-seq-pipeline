@@ -53,6 +53,105 @@ class PipelineQueryAgent:
     def get_all_conditions(self) -> List[str]:
         """Get list of all conditions."""
         return list(self.summary['condition_groups'].keys())
+
+    def get_sample_axes(self) -> Dict[str, Any]:
+        """
+        Get all experimental axes and their values.
+        Returns genotype, tissue, sex groupings.
+        """
+        axes = self.summary.get('sample_axes', {})
+        result = {}
+        for axis, groups in axes.items():
+            result[axis] = {
+                "values": list(groups.keys()),
+                "counts": {v: len(s) for v, s in groups.items()}
+            }
+        return result
+
+    def filter_samples(self, filters: Dict[str, str]) -> List[str]:
+        """
+        Filter samples by multiple axes simultaneously.
+        
+        Args:
+            filters: e.g. {"tissue": "HPC", "sex": "Male", "genotype": "wildtype"}
+        
+        Returns list of sample IDs matching ALL filters.
+        """
+        axes = self.summary.get('sample_axes', {})
+        
+        # Start with all samples, then intersect per filter
+        matching = set(self.summary['qc_summary']['sample_statuses'].keys())
+        
+        for axis, value in filters.items():
+            axis_groups = axes.get(axis, {})
+            # Case-insensitive match
+            matched_value = next(
+                (v for v in axis_groups if v.lower() == value.lower()), None
+            )
+            if matched_value:
+                matching &= set(axis_groups[matched_value])
+            else:
+                matching = set()  # No match → empty
+                break
+        
+        return sorted(matching)
+
+    def compare_by_axis(self, axis: str, filters: Dict[str, str] = None) -> Dict[str, Any]:
+        """
+        Compare QC metrics grouped by a specific axis, with optional pre-filtering.
+        
+        Args:
+            axis:    "genotype" | "tissue" | "sex"
+            filters: optional pre-filter e.g. {"tissue": "HPC"}
+        
+        Examples:
+            compare_by_axis("genotype", {"tissue": "HPC"})
+                → wildtype vs heterozygous, HPC samples only
+            compare_by_axis("tissue", {"genotype": "wildtype"})
+                → HPC vs PFC, wildtype only
+        """
+        axes = self.summary.get('sample_axes', {})
+        axis_groups = axes.get(axis, {})
+        
+        if not axis_groups:
+            return {"error": f"Unknown axis: {axis}. Available: {list(axes.keys())}"}
+        
+        comparison = {}
+        for value, samples in axis_groups.items():
+            # Apply optional pre-filter
+            if filters:
+                samples = [s for s in samples if s in self.filter_samples(filters)]
+            
+            if not samples:
+                continue
+            
+            metrics = [
+                self.summary['sample_metrics'][s]
+                for s in samples
+                if s in self.summary['sample_metrics']
+            ]
+            
+            if not metrics:
+                continue
+            
+            comparison[value] = {
+                "n_samples": len(samples),
+                "mean_uniquely_mapped": round(
+                    sum(m['uniquely_mapped_pct'] for m in metrics) / len(metrics), 2
+                ),
+                "mean_assignment_rate": round(
+                    sum(m['assignment_rate'] for m in metrics) / len(metrics), 2
+                ),
+                "passed": sum(1 for m in metrics if m['status'] == 'PASS'),
+                "failed": sum(1 for m in metrics if m['status'] != 'PASS'),
+                "samples": samples
+            }
+        
+        return {
+            "axis": axis,
+            "filters_applied": filters or {},
+            "comparison": comparison
+        }
     
     def get_sample_details(self, sample_id: str) -> Dict[str, Any]:
         """Get detailed metrics for a sample."""
@@ -109,13 +208,21 @@ class PipelineQueryAgent:
             'conditions': self.get_all_conditions,
             'compare': self.compare_conditions,
             'issues': self.get_all_issues,
-            'stats': self.get_aggregate_stats
+            'stats': self.get_aggregate_stats,
+            'axes': self.get_sample_axes,
         }
         
         if query_type == 'sample':
             return self.get_sample_details(kwargs.get('sample_id'))
         elif query_type == 'condition':
             return self.get_samples_by_condition(kwargs.get('condition'))
+        elif query_type == 'filter':
+            return self.filter_samples(kwargs.get('filters', {}))
+        elif query_type == 'compare_axis':
+            return self.compare_by_axis(
+                axis=kwargs.get('axis', 'genotype'),
+                filters=kwargs.get('filters')
+            )
         elif query_type in query_map:
             return query_map[query_type]()
         else:
@@ -134,7 +241,8 @@ def main():
     parser.add_argument(
         '--query',
         required=True,
-        choices=['status', 'failed', 'conditions', 'compare', 'issues', 'stats', 'sample', 'condition'],
+        choices=['status', 'failed', 'conditions', 'compare', 'issues', 'stats',
+                 'sample', 'condition', 'axes', 'filter', 'compare_axis'],
         help='Type of query to perform'
     )
     parser.add_argument(
@@ -144,6 +252,18 @@ def main():
     parser.add_argument(
         '--condition',
         help='Condition name for condition query'
+    )
+    parser.add_argument(
+        '--axis',
+        choices=['genotype', 'tissue', 'sex'],
+        default='genotype',
+        help='Axis for compare_axis query (default: genotype)'
+    )
+    parser.add_argument(
+        '--filter',
+        action='append',
+        metavar='AXIS=VALUE',
+        help='Filter samples by axis=value (repeatable). e.g. --filter tissue=HPC --filter sex=Male'
     )
     parser.add_argument(
         '--format',
@@ -173,6 +293,20 @@ def main():
                 print("ERROR: --condition required for condition query", file=sys.stderr)
                 sys.exit(1)
             result = agent.query('condition', condition=args.condition)
+        elif args.query == 'filter':
+            filters = {}
+            for f in (args.filter or []):
+                if '=' in f:
+                    k, v = f.split('=', 1)
+                    filters[k.strip()] = v.strip()
+            result = agent.query('filter', filters=filters)
+        elif args.query == 'compare_axis':
+            filters = {}
+            for f in (args.filter or []):
+                if '=' in f:
+                    k, v = f.split('=', 1)
+                    filters[k.strip()] = v.strip()
+            result = agent.query('compare_axis', axis=args.axis, filters=filters or None)
         else:
             result = agent.query(args.query)
         

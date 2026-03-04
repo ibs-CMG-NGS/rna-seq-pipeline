@@ -346,13 +346,18 @@ def main():
             cfg = yaml.safe_load(f)
         ss_rel = cfg.get('sample_sheet')
         if ss_rel:
-            # Resolve relative to project root (parent of config file)
-            samplesheet = (args.config.parent.parent / ss_rel).resolve()
-            if not samplesheet.exists():
-                # Try relative to cwd
-                samplesheet = Path(ss_rel).resolve()
-            if samplesheet.exists():
-                print(f"Samplesheet from config: {samplesheet}")
+            # Try in order: cwd-relative → config-dir-relative → absolute
+            candidates = [
+                Path.cwd() / ss_rel,
+                args.config.parent / ss_rel,
+                args.config.parent.parent / ss_rel,
+                Path(ss_rel),
+            ]
+            for candidate in candidates:
+                if candidate.resolve().exists():
+                    samplesheet = candidate.resolve()
+                    print(f"Samplesheet from config: {samplesheet}")
+                    break
             else:
                 print(f"⚠️  Samplesheet from config not found: {ss_rel}")
                 samplesheet = None
