@@ -23,7 +23,7 @@ PIPELINE_TYPE = config.get("pipeline_type", "rna-seq")
 def get_sample_dir(sample_id):
     """샘플별 디렉토리 경로 반환"""
     if USE_STANDARD:
-        base = config.get("base_results_dir", "/home/ngs/data/results")
+        base = config.get("base_results_dir", config.get("results_dir", "/home/ngs/data/results"))
         return f"{base}/{PROJECT_ID}/{sample_id}/{PIPELINE_TYPE}"
     else:
         return config.get("results_dir", "results")
@@ -86,7 +86,8 @@ if not USE_STANDARD:
     LOGS_DIR = config.get("logs_dir", "logs")
 else:
     # 표준 구조 경로
-    BASE_RESULTS = config.get("base_results_dir", "/home/ngs/data/results")
+    # 'base_results_dir' 또는 'results_dir' 키 모두 지원
+    BASE_RESULTS = config.get("base_results_dir", config.get("results_dir", "/home/ngs/data/results"))
     PROJECT_DIR = f"{BASE_RESULTS}/{PROJECT_ID}"
     PROJECT_SUMMARY_DIR = f"{PROJECT_DIR}/project_summary"
     METADATA_DIR = f"{PROJECT_DIR}/metadata"
@@ -119,8 +120,9 @@ if USE_SAMPLE_SHEET:
     if not sample_sheet_file.exists():
         raise ValueError(f"Sample sheet not found: {SAMPLE_SHEET_PATH}")
     
-    # 샘플 시트 읽기
-    samples_df = pd.read_csv(sample_sheet_file)
+    # 샘플 시트 읽기 (TSV 또는 CSV 자동 감지)
+    sep = '\t' if str(sample_sheet_file).endswith('.tsv') else ','
+    samples_df = pd.read_csv(sample_sheet_file, sep=sep)
     
     # 현재 프로젝트의 샘플만 필터링
     if 'project_id' in samples_df.columns:
@@ -135,7 +137,17 @@ if USE_SAMPLE_SHEET:
     SAMPLE_METADATA = samples_df.set_index('sample_id').to_dict('index')
     
     # FASTQ 경로가 샘플 시트에 있으면 사용
-    if 'fastq_1' in samples_df.columns:
+    # 컬럼명 정규화: fastq_r1/fastq_r2 → fastq_1/fastq_2 (내부적으로 통일)
+    col_r1 = next((c for c in samples_df.columns if c.lower() in ('fastq_r1', 'fastq_1', 'r1', 'read1')), None)
+    col_r2 = next((c for c in samples_df.columns if c.lower() in ('fastq_r2', 'fastq_2', 'r2', 'read2')), None)
+    
+    if col_r1 and col_r2:
+        # 내부 참조용으로 fastq_1/fastq_2 컬럼 추가
+        for sid in SAMPLE_METADATA:
+            SAMPLE_METADATA[sid]['fastq_1'] = SAMPLE_METADATA[sid][col_r1]
+            SAMPLE_METADATA[sid]['fastq_2'] = SAMPLE_METADATA[sid][col_r2]
+    
+    if 'fastq_1' in (SAMPLE_METADATA[SAMPLES[0]] if SAMPLES else {}):
         # 샘플 시트의 FASTQ 경로를 사용하는 헬퍼 함수
         def get_raw_fastq_r1(wildcards):
             return SAMPLE_METADATA[wildcards.sample]['fastq_1']
