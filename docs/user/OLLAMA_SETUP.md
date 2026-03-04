@@ -33,27 +33,27 @@ The service will run on `http://localhost:11434` by default.
 
 ### 2. Download Models
 
-**Recommended models for genomics:**
+**권장 모델:**
 
 ```bash
-# Llama 3.1 8B (Best balance of speed/quality)
+# qwen2.5:32b — 권장 (GPU 서버, native tool calling, 최고 품질)
+ollama pull qwen2.5:32b
+
+# llama3.1:8b — GPU 없는 환경 또는 경량 사용
 ollama pull llama3.1:8b
 
-# Llama 3.1 70B (Highest quality, slower)
-ollama pull llama3.1:70b
-
-# Mistral 7B (Faster, good for simple queries)
+# mistral:7b — 빠른 상태 확인용
 ollama pull mistral:7b
 
-# Qwen 2.5 (Alternative option)
-ollama pull qwen2.5:7b
+# llama3.1:70b — 고성능 서버 (42GB+ RAM)
+ollama pull llama3.1:70b
 ```
 
-**Model selection guide:**
-- **llama3.1:8b** - Default recommendation (good speed/quality balance)
-- **llama3.1:70b** - Best for complex analysis tasks (requires 40GB+ RAM)
-- **mistral:7b** - Fastest option for simple status queries
-- **qwen2.5:7b** - Good alternative to Llama
+**모델 선택 가이드:**
+- **qwen2.5:32b** — 기본 권장 (GPU 서버, 20GB VRAM, native tool calling, 한국어 우수)
+- **llama3.1:8b** — GPU 없을 때 (8GB RAM, native tool calling)
+- **mistral:7b** — 빠른 단순 쿼리 (8GB RAM, text-pattern tool calling)
+- **llama3.1:70b** — 가장 고품질 (42GB RAM 필요)
 
 ### 3. Install Python Package
 
@@ -234,12 +234,12 @@ ollama pull llama3.1:8b-q4_0
 
 ## Performance Comparison
 
-| Model | Size | RAM | Speed | Quality | Recommended For |
-|-------|------|-----|-------|---------|-----------------|
-| mistral:7b | 4GB | 8GB | Fast | Good | Quick queries |
-| llama3.1:8b | 5GB | 8GB | Medium | Great | General use (default) |
-| qwen2.5:7b | 4.5GB | 8GB | Medium | Great | Alternative |
-| llama3.1:70b | 40GB | 48GB | Slow | Best | Complex analysis |
+| Model | Size | RAM/VRAM | Speed | Quality | Tool Calling | Recommended For |
+|-------|------|----------|-------|---------|--------------|-----------------|
+| mistral:7b | 4GB | 8GB RAM | Fast | Good | Text pattern | Quick status checks |
+| llama3.1:8b | 5GB | 8GB RAM | Medium | Great | Native | GPU 없는 환경 |
+| **qwen2.5:32b** | 20GB | 20GB VRAM | Medium | **Excellent** | **Native (GPU)** | **기본 권장** |
+| llama3.1:70b | 40GB | 42GB RAM | Slow | Best | Native | 고성능 서버 |
 
 ## Security Notes
 

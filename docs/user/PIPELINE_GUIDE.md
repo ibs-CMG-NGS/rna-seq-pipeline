@@ -37,7 +37,51 @@ qc_report_output: "results/qc_report.html"
 qc_top_genes: 10
 ```
 
-## 🚀 실행 방법
+## 🤖 LLM Agent로 파이프라인 실행 (권장)
+
+자연어 대화로 파이프라인의 모든 단계를 처리할 수 있습니다.  
+명령어를 직접 입력하지 않아도 됩니다.
+
+```bash
+cd /home/ygkim/ngs-pipeline/rna-seq-pipeline
+
+python scripts/standardization/llm_agent.py \
+  --interactive \
+  --model qwen2.5:32b
+```
+
+**대화 예시 (처음부터 끝까지):**
+```
+You: /data_3tb/shared/chd8-rna-seq-raw-data/fastq/ 에서 FASTQ 파일 찾아줘
+Agent: 38개 샘플 감지 (149GB, paired-end) ✅
+
+You: 새 프로젝트 만들어줘. ID는 my-project, 결과는 /data_3tb/shared/output/my-project/
+Agent: config/projects/my-project.yaml 생성 완료 ✅
+
+You: 리소스 얼마나 필요해?
+Agent: 출력 약 746GB, 소요 5-10시간, 디스크/RAM 충분 ✅
+
+You: 샘플 시트 만들어줘
+Agent: wildtype 20개, heterozygous 18개 자동 분류 → TSV 저장 ✅
+
+You: 데이터 검증해줘
+Agent: FASTQ ✅, 디스크 ✅, genome 경로 ⚠️ 확인 필요
+
+You: dry-run 해줘
+Agent: 270 jobs, 11 rules — 문제 없음 ✅
+
+You: 16 cores로 실행해줘
+Agent: 파이프라인 시작 🚀
+
+You: 상태 보여줘
+Agent: 진행률 45%, star_align 17/38 진행 중...
+```
+
+> **빠른 시작 가이드**: `docs/user/LLM_AGENT_QUICKSTART.md`
+
+---
+
+## 🔧 수동 실행 방법
 
 ### 1. 환경 설정
 
