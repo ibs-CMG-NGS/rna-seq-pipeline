@@ -63,8 +63,8 @@ class PipelineAgent:
     """Natural language agent for pipeline management."""
     
     def __init__(self, 
-                 project_summary_path: Path,
-                 rnaseq_output_dir: Path,
+                 project_summary_path: Path = None,
+                 rnaseq_output_dir: Path = None,
                  de_pipeline_dir: Path = None,
                  llm_provider: str = "ollama",
                  api_key: str = None,
@@ -74,25 +74,31 @@ class PipelineAgent:
         Initialize agent.
         
         Args:
-            project_summary_path: Path to project_summary.json
-            rnaseq_output_dir: RNA-seq pipeline output directory
+            project_summary_path: Path to project_summary.json (optional — not needed for pipeline execution tools)
+            rnaseq_output_dir: RNA-seq pipeline output directory (optional)
             de_pipeline_dir: DE/GO pipeline directory (optional)
             llm_provider: "ollama" (local, recommended), "openai", "anthropic", "llamacpp"
             api_key: API key for cloud LLM providers
             model: Model name (e.g., "llama3.1", "gpt-4", "claude-3-sonnet")
             ollama_host: Ollama server URL (default: http://localhost:11434)
         """
-        self.project_summary_path = Path(project_summary_path)
-        self.rnaseq_output_dir = Path(rnaseq_output_dir)
+        self.project_summary_path = Path(project_summary_path) if project_summary_path else None
+        self.rnaseq_output_dir = Path(rnaseq_output_dir) if rnaseq_output_dir else None
         self.de_pipeline_dir = Path(de_pipeline_dir) if de_pipeline_dir else None
         self.llm_provider = llm_provider
         self.ollama_host = ollama_host
         
-        # Load project summary
-        with open(self.project_summary_path) as f:
-            self.project_summary = json.load(f)
-        
-        self.project_id = self.project_summary['project_id']
+        # Load project summary (optional — pipeline execution tools don't require it)
+        if self.project_summary_path and self.project_summary_path.exists():
+            with open(self.project_summary_path) as f:
+                self.project_summary = json.load(f)
+            self.project_id = self.project_summary['project_id']
+        else:
+            self.project_summary = {}
+            self.project_id = "unknown"
+            if self.project_summary_path:
+                print(f"⚠️  project_summary.json not found: {self.project_summary_path}")
+                print("   Pipeline execution tools (detect_fastq, run_pipeline, etc.) are still available.")
         
         # Initialize LLM client
         if llm_provider == "ollama" and HAS_OLLAMA:
@@ -1110,14 +1116,14 @@ def main():
     parser.add_argument(
         '--project-summary',
         type=Path,
-        required=True,
-        help='Path to project_summary.json'
+        default=None,
+        help='Path to project_summary.json (optional — not required for pipeline execution tools)'
     )
     parser.add_argument(
         '--rnaseq-output',
         type=Path,
-        required=True,
-        help='RNA-seq pipeline output directory'
+        default=None,
+        help='RNA-seq pipeline output directory (optional)'
     )
     parser.add_argument(
         '--de-pipeline',
@@ -1173,7 +1179,11 @@ def main():
     if args.interactive:
         # Interactive mode
         print(f"🤖 RNA-seq Pipeline Agent")
-        print(f"Project: {agent.project_id}")
+        if agent.project_id != "unknown":
+            print(f"Project: {agent.project_id}")
+        else:
+            print(f"Mode: Pipeline execution (no project summary loaded)")
+            print(f"      Use detect_fastq_files, create_project_config, run_pipeline, etc.")
         print(f"Type 'exit' or 'quit' to end session\n")
         
         while True:
