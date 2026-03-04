@@ -235,11 +235,32 @@ def validate_input_data(
         warnings = []
         errors = []
         
-        # Check 1: Data directory exists
-        data_dir = Path(config.get('data_dir', ''))
-        if data_dir.exists():
+        # Check 1: Data directory / sample sheet FASTQ files
+        data_dir_str = config.get('data_dir', '')
+        sample_sheet_path = config.get('sample_sheet', '')
+
+        # If data_dir not specified but sample_sheet is, derive data_dir from it
+        if not data_dir_str and sample_sheet_path:
+            ss_path = Path(sample_sheet_path)
+            if not ss_path.is_absolute():
+                # resolve relative to config file location
+                ss_path = config_path.parent.parent / ss_path  # config/projects/ -> repo root
+                if not ss_path.exists():
+                    ss_path = config_path.parent / ss_path.name
+            if ss_path.exists():
+                import csv
+                with open(ss_path) as sf:
+                    reader = csv.DictReader(sf, delimiter='\t')
+                    rows = list(reader)
+                if rows and 'fastq_r1' in rows[0]:
+                    first_fastq = Path(rows[0]['fastq_r1'])
+                    data_dir_str = str(first_fastq.parent)
+
+        data_dir = Path(data_dir_str) if data_dir_str else Path('')
+
+        if data_dir_str and data_dir.exists():
             checks['data_dir'] = True
-            
+
             # Count FASTQ files
             fastq_result = detect_fastq_files(str(data_dir))
             if fastq_result['status'] == 'success':
@@ -249,12 +270,16 @@ def validate_input_data(
             else:
                 checks['fastq_files'] = False
                 errors.append(fastq_result['message'])
-        else:
+        elif data_dir_str:
             checks['data_dir'] = False
             errors.append(f"Data directory not found: {data_dir}")
+        else:
+            checks['data_dir'] = False
+            errors.append("No data_dir or sample_sheet specified in config")
         
         # Check 2: Output directory writable
-        results_dir = Path(config.get('base_results_dir', 'results'))
+        # Support both 'results_dir' and legacy 'base_results_dir' keys
+        results_dir = Path(config.get('results_dir', config.get('base_results_dir', 'results')))
         try:
             results_dir.mkdir(parents=True, exist_ok=True)
             checks['output_dir'] = True
@@ -293,8 +318,8 @@ def validate_input_data(
                 checks['reference_genome'] = False
                 errors.append(f"Reference genome not found: {genome_fasta}")
         
-        # Check 5: GTF annotation exists
-        genes_gtf = config.get('genes_gtf', '')
+        # Check 5: GTF annotation exists (support both 'genes_gtf' and 'annotation_gtf' keys)
+        genes_gtf = config.get('genes_gtf', '') or config.get('annotation_gtf', '')
         if genes_gtf:
             gtf_path = Path(genes_gtf)
             if gtf_path.exists():
