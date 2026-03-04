@@ -18,7 +18,9 @@ import subprocess
 import sys
 
 # Import security utilities
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Support running from project root OR from scripts/standardization/
+_project_root = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(_project_root))
 try:
     from scripts.utils.security import (
         validate_project_id,
@@ -29,7 +31,6 @@ try:
     )
     SECURITY_ENABLED = True
 except ImportError:
-    print("⚠️  Warning: Security utilities not available")
     SECURITY_ENABLED = False
 
 # LLM Integration
@@ -539,7 +540,75 @@ IMPORTANT:
 
 Be conversational, clear, and actionable. When showing numbers, include units and context.
 """
-    
+
+    def _extract_tool_call(self, text: str) -> Optional[Dict]:
+        """
+        Robustly extract TOOL_CALL JSON from LLM response.
+        
+        Handles:
+        - Single-line:  TOOL_CALL: {"name": ..., "parameters": {...}}
+        - Multi-line:   TOOL_CALL:\n{\n  "name": ...\n}
+        - Code blocks:  TOOL_CALL:\n```\n{...}\n```
+        - Single quotes from LLM (replaced before parsing)
+        """
+        import re
+
+        # Find the TOOL_CALL: marker and grab everything after it
+        idx = text.find("TOOL_CALL:")
+        if idx == -1:
+            return None
+
+        after = text[idx + len("TOOL_CALL:"):].strip()
+
+        # Strip optional markdown code fences
+        after = re.sub(r'^```[a-z]*\n?', '', after).strip()
+        after = re.sub(r'```$', '', after).strip()
+
+        # Try to find the outermost {...} block
+        brace_start = after.find('{')
+        if brace_start == -1:
+            return None
+
+        depth = 0
+        end = -1
+        for i, ch in enumerate(after[brace_start:], start=brace_start):
+            if ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+
+        if end == -1:
+            return None
+
+        json_str = after[brace_start:end]
+
+        # Attempt 1: strict JSON
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError:
+            pass
+
+        # Attempt 2: replace single quotes → double quotes (common LLM mistake)
+        try:
+            fixed = json_str.replace("'", '"')
+            return json.loads(fixed)
+        except json.JSONDecodeError:
+            pass
+
+        # Attempt 3: fix unquoted true/false/null (Python-style booleans)
+        try:
+            fixed = re.sub(r'\bTrue\b', 'true', json_str)
+            fixed = re.sub(r'\bFalse\b', 'false', fixed)
+            fixed = re.sub(r'\bNone\b', 'null', fixed)
+            return json.loads(fixed)
+        except json.JSONDecodeError:
+            pass
+
+        return None
+
     def chat(self, user_message: str) -> str:
         """
         Process user message and return response.
@@ -640,41 +709,38 @@ Be conversational, clear, and actionable. When showing numbers, include units an
             
             # Check if response contains TOOL_CALL
             if "TOOL_CALL:" in response_text:
-                # Extract JSON from TOOL_CALL
                 import re
-                match = re.search(r'TOOL_CALL:\s*({.*?})', response_text, re.DOTALL)
-                if match:
-                    try:
-                        tool_call = json.loads(match.group(1))
-                        function_name = tool_call['name']
-                        arguments = tool_call.get('parameters', {})
-                        
-                        # Execute the tool
-                        print(f"\n🔧 Calling tool: {function_name}")
-                        print(f"📋 Parameters: {arguments}")
-                        
-                        function_result = self._execute_tool(function_name, arguments)
-                        
-                        # Format result for user
-                        result_str = json.dumps(function_result, indent=2, ensure_ascii=False)
-                        
-                        # Ask LLM to explain the result
-                        messages.append({"role": "assistant", "content": response_text})
-                        messages.append({
-                            "role": "user",
-                            "content": f"Tool result:\n{result_str}\n\nPlease explain this result to the user in a friendly way."
-                        })
-                        
-                        explanation = ollama.chat(
-                            model=self.model,
-                            messages=messages,
-                            options={"temperature": 0.7}
-                        )
-                        
-                        return explanation['message']['content']
+                tool_call = self._extract_tool_call(response_text)
+                if tool_call:
+                    function_name = tool_call['name']
+                    arguments = tool_call.get('parameters', {})
                     
-                    except json.JSONDecodeError as e:
-                        return f"❌ Error parsing tool call: {e}\n\nPlease try rephrasing your request."
+                    # Execute the tool
+                    print(f"\n🔧 Calling tool: {function_name}")
+                    print(f"📋 Parameters: {arguments}")
+                    
+                    function_result = self._execute_tool(function_name, arguments)
+                    
+                    # Format result for user
+                    result_str = json.dumps(function_result, indent=2, ensure_ascii=False)
+                    
+                    # Ask LLM to explain the result
+                    messages.append({"role": "assistant", "content": response_text})
+                    messages.append({
+                        "role": "user",
+                        "content": f"Tool result:\n{result_str}\n\nPlease explain this result to the user in a friendly way."
+                    })
+                    
+                    explanation = ollama.chat(
+                        model=self.model,
+                        messages=messages,
+                        options={"temperature": 0.7}
+                    )
+                    
+                    return explanation['message']['content']
+                else:
+                    # TOOL_CALL found but couldn't parse — return raw response
+                    return response_text
                 
             # No tool call needed, return response as-is
             return response_text
