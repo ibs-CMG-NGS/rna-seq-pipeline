@@ -239,7 +239,6 @@ print(f"  Standard Structure: {USE_STANDARD}")
 if USE_STANDARD:
     print(f"  Project ID: {PROJECT_ID}")
     print(f"  Pipeline Type: {PIPELINE_TYPE}")
-    print(f"  Base Results Dir: {BASE_RESULTS}")
     print(f"  Project Dir: {PROJECT_DIR}")
 else:
     print(f"  Legacy Mode - Results Dir: {RESULTS_DIR}")
