@@ -25,70 +25,187 @@ def create_project_config(
     species: str = "human",
     read_type: str = "paired-end",
     use_sample_sheet: bool = False,
+    sample_sheet: str = None,
+    genome_dir: str = None,
+    genome_fasta: str = None,
+    annotation_gtf: str = None,
+    star_index: str = None,
+    genome_build: str = None,
+    threads: int = 12,
+    memory_gb: int = 48,
+    strandedness: int = 0,
     template: str = "config/config.yaml"
 ) -> Dict[str, Any]:
     """
-    Generate project-specific config.yaml from parameters.
-    
+    Generate a complete project-specific config.yaml.
+
+    Produces a fully self-contained config that overrides ALL keys from
+    config.yaml so no '/path/to/...' placeholder leaks through.
+
     Args:
-        project_id: Project identifier
+        project_id: Project identifier (used as output subdirectory name)
         data_dir: Directory containing FASTQ files
-        results_dir: Output directory for results
-        species: Species (human, mouse, etc.)
-        read_type: paired-end or single-end
-        use_sample_sheet: Whether to use sample sheet
-        template: Template config file to use as base
-    
+        results_dir: Base output directory (project subdir created inside)
+        species: 'human' | 'mouse' | 'rat' | other
+        read_type: 'paired-end' | 'single-end'
+        use_sample_sheet: Whether to use a sample sheet TSV
+        sample_sheet: Path to sample sheet TSV (required when use_sample_sheet=True)
+        genome_dir: Path to genome reference directory
+        genome_fasta: Path to genome FASTA file
+        annotation_gtf: Path to gene annotation GTF file
+        star_index: Path to STAR genome index directory
+        genome_build: Genome build string (e.g. 'GRCh38', 'GRCm38')
+        threads: CPU threads for alignment/quantification
+        memory_gb: RAM limit in GB
+        strandedness: 0=unstranded, 1=forward, 2=reverse
+        template: Unused (kept for backwards compat)
+
     Returns:
-        {
-            "status": "success"|"error",
-            "config_path": str,
-            "message": str
-        }
+        {"status": "success"|"error", "config_path": str, "message": str, "config": dict}
     """
     try:
-        # Load template config
-        if Path(template).exists():
-            with open(template) as f:
-                config = yaml.safe_load(f)
-        else:
-            config = {}
-        
-        # Update with project-specific values
-        config.update({
+        # ── Species defaults ──────────────────────────────────────────────
+        _species_defaults = {
+            "human": {
+                "genome_build": "GRCh38",
+                "gc_min": 35, "gc_max": 65,
+                "adapter_r1": "AGATCGGAAGAGCACACGTCTGAACTCCAGTCA",
+                "adapter_r2": "AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT",
+            },
+            "mouse": {
+                "genome_build": "GRCm38",
+                "gc_min": 40, "gc_max": 55,
+                "adapter_r1": "AGATCGGAAGAGCACACGTCTGAACTCCAGTCA",
+                "adapter_r2": "AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT",
+            },
+            "rat": {
+                "genome_build": "Rnor_6.0",
+                "gc_min": 40, "gc_max": 55,
+                "adapter_r1": "AGATCGGAAGAGCACACGTCTGAACTCCAGTCA",
+                "adapter_r2": "AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT",
+            },
+        }
+        sp = _species_defaults.get(species.lower(), _species_defaults["human"])
+
+        base_results = str(Path(results_dir).resolve())
+        project_results = str(Path(results_dir).resolve() / project_id)
+
+        config = {
+            # ── Project ───────────────────────────────────────────────────
             'project_id': project_id,
-            'use_standard_structure': True,
+            'project_name': project_id.replace('-', ' ').replace('_', ' ').title(),
+            'pipeline_type': 'rna-seq',
+
+            # ── Input ─────────────────────────────────────────────────────
             'data_dir': str(Path(data_dir).resolve()),
-            'base_results_dir': str(Path(results_dir).resolve()),
-            'species': species,
+            'raw_data_subdir': '',
+
+            # ── Sample sheet ──────────────────────────────────────────────
             'use_sample_sheet': use_sample_sheet,
-            'pipeline_type': 'rna-seq'
-        })
-        
-        # Set species-specific reference paths
-        if species == "human":
-            config['genome_fasta'] = "genome/human/GRCh38.fa"
-            config['genes_gtf'] = "genome/human/gencode.v44.annotation.gtf"
-        elif species == "mouse":
-            config['genome_fasta'] = "genome/mouse/GRCm39.fa"
-            config['genes_gtf'] = "genome/mouse/gencode.vM33.annotation.gtf"
-        
-        # Save config
+            'sample_sheet': sample_sheet or f'config/samples/{project_id}.tsv',
+
+            # ── Output structure ──────────────────────────────────────────
+            'use_standard_structure': True,
+            'base_results_dir': base_results,
+            'results_dir': project_results,
+            'logs_dir': f'{project_results}/logs',
+
+            # ── Reference genome ──────────────────────────────────────────
+            'genome_dir':     genome_dir     or '',
+            'genome_fasta':   genome_fasta   or '',
+            'annotation_gtf': annotation_gtf or '',
+            'star_index':     star_index     or '',
+
+            # ── Species ───────────────────────────────────────────────────
+            'species': species,
+            'genome_build': genome_build or sp['genome_build'],
+
+            # ── Adapters ──────────────────────────────────────────────────
+            'adapter_r1': sp['adapter_r1'],
+            'adapter_r2': sp['adapter_r2'],
+
+            # ── QC parameters ─────────────────────────────────────────────
+            'quality_cutoff': 20,
+            'min_read_length': 20,
+            'fastqc_threads': 2,
+
+            # ── Trimming ──────────────────────────────────────────────────
+            'cutadapt_threads': 4,
+
+            # ── Alignment ─────────────────────────────────────────────────
+            'star_threads': threads,
+            'star_memory_gb': min(35, memory_gb - 13),
+            'star_sort_memory_bytes': 30000000000,
+            'gzipped_fastq': True,
+            'star_params': (
+                '--outFilterMultimapNmax 20 --alignSJoverhangMin 8 '
+                '--alignSJDBoverhangMin 1'
+            ),
+
+            # ── Quantification ────────────────────────────────────────────
+            'featurecounts_threads': min(8, threads),
+            'feature_type': 'exon',
+            'attribute_type': 'gene_id',
+            'strandedness': strandedness,
+            'featurecounts_params': '-p -B -C',
+
+            # ── QC report ─────────────────────────────────────────────────
+            'generate_qc_report': True,
+            'generate_multiqc': True,
+            'qc_report_filename': 'qc_report.html',
+            'qc_top_genes': 10,
+
+            # ── FastQC auto-evaluation ────────────────────────────────────
+            'fastqc_evaluation': {
+                'enabled': True,
+                'min_total_sequences': 5000000,
+                'min_gc_content':  sp['gc_min'],
+                'max_gc_content':  sp['gc_max'],
+                'min_median_quality': 28,
+                'min_lower_quartile': 20,
+                'min_q30_percentage': 75,
+                'max_n_content': 5.0,
+                'critical_n_content': 10.0,
+                'max_adapter_trimmed': 1.0,
+                'warn_adapter_raw': 10.0,
+                'evaluation_report': 'fastqc_evaluation.txt',
+                'evaluation_json':   'fastqc_evaluation.json',
+            },
+
+            # ── QC thresholds (STAR alignment) ────────────────────────────
+            'qc_thresholds': {
+                'min_uniquely_mapped_pct': 70.0,
+                'min_assignment_rate':     60.0,
+                'max_mismatch_rate':        2.0,
+            },
+
+            # ── Resources ─────────────────────────────────────────────────
+            'threads': threads,
+            'memory_gb': memory_gb,
+        }
+
+        # ── Write config ──────────────────────────────────────────────────
         config_dir = Path("config/projects")
         config_dir.mkdir(parents=True, exist_ok=True)
-        
         config_path = config_dir / f"{project_id}.yaml"
-        
+
         with open(config_path, 'w') as f:
-            yaml.dump(config, f, default_flow_style=False, sort_keys=False)
-        
+            f.write(f"# {config['project_name']} — generated by create_project_config\n")
+            f.write(f"# Species: {species}  Genome: {config['genome_build']}\n")
+            f.write(f"# ⚠️  Review genome paths before running!\n\n")
+            yaml.dump(config, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
         return {
             "status": "success",
             "config_path": str(config_path),
-            "message": f"Config created: {config_path}",
+            "message": (
+                f"Config created: {config_path}\n"
+                f"  → Review genome paths (genome_fasta, annotation_gtf, star_index)\n"
+                f"  → strandedness={strandedness} — verify with RSeQC if unsure"
+            ),
             "config": config
         }
-    
+
     except Exception as e:
         return {
             "status": "error",

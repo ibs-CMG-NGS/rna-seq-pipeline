@@ -299,14 +299,24 @@ class PipelineAgent:
             # Phase 8A: Pipeline Execution Tools
             {
                 "name": "create_project_config",
-                "description": "Create new project configuration file from parameters",
+                "description": "Create a complete project configuration YAML file with all required parameters. Always ask the user for genome paths (genome_fasta, annotation_gtf, star_index) before calling this tool.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "project_id": {"type": "string", "description": "Project identifier"},
-                        "data_dir": {"type": "string", "description": "Directory containing FASTQ files"},
-                        "results_dir": {"type": "string", "description": "Output directory for results"},
-                        "species": {"type": "string", "description": "Species (human/mouse)", "default": "human"}
+                        "project_id":     {"type": "string", "description": "Project identifier (e.g. 'mouse-chd8')"},
+                        "data_dir":       {"type": "string", "description": "Absolute path to directory containing FASTQ files"},
+                        "results_dir":    {"type": "string", "description": "Absolute path to base output directory (project subdir created inside)"},
+                        "species":        {"type": "string", "description": "Species: 'human', 'mouse', or 'rat'", "default": "human"},
+                        "genome_dir":     {"type": "string", "description": "Absolute path to genome reference directory"},
+                        "genome_fasta":   {"type": "string", "description": "Absolute path to genome FASTA file"},
+                        "annotation_gtf": {"type": "string", "description": "Absolute path to gene annotation GTF file"},
+                        "star_index":     {"type": "string", "description": "Absolute path to STAR genome index directory"},
+                        "genome_build":   {"type": "string", "description": "Genome build string (e.g. 'GRCh38', 'GRCm38')"},
+                        "use_sample_sheet": {"type": "boolean", "description": "Use sample sheet TSV instead of auto-detecting FASTQs", "default": False},
+                        "sample_sheet":   {"type": "string", "description": "Path to sample sheet TSV (if use_sample_sheet=true)"},
+                        "threads":        {"type": "integer", "description": "CPU threads for alignment", "default": 12},
+                        "memory_gb":      {"type": "integer", "description": "RAM limit in GB", "default": 48},
+                        "strandedness":   {"type": "integer", "description": "0=unstranded, 1=forward, 2=reverse", "default": 0}
                     },
                     "required": ["project_id", "data_dir", "results_dir"]
                 }
@@ -628,7 +638,17 @@ class PipelineAgent:
                     project_id=arguments['project_id'],
                     data_dir=arguments['data_dir'],
                     results_dir=arguments['results_dir'],
-                    species=arguments.get('species', 'human')
+                    species=arguments.get('species', 'human'),
+                    genome_dir=arguments.get('genome_dir'),
+                    genome_fasta=arguments.get('genome_fasta'),
+                    annotation_gtf=arguments.get('annotation_gtf'),
+                    star_index=arguments.get('star_index'),
+                    genome_build=arguments.get('genome_build'),
+                    use_sample_sheet=arguments.get('use_sample_sheet', False),
+                    sample_sheet=arguments.get('sample_sheet'),
+                    threads=arguments.get('threads', 12),
+                    memory_gb=arguments.get('memory_gb', 48),
+                    strandedness=arguments.get('strandedness', 0),
                 )
                 return result
             except Exception as e:
