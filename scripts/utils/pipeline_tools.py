@@ -480,26 +480,26 @@ def run_pipeline(
     cores: int = 8,
     dry_run: bool = True,
     until_rule: Optional[str] = None,
-    force: bool = False
+    force: bool = False,
+    background: bool = False,
 ) -> Dict[str, Any]:
     """
     Execute Snakemake workflow.
-    
+
     Args:
         config_file: Path to config.yaml
         cores: Number of cores to use
-        dry_run: If True, show what would be run without executing
+        dry_run: If True, show what would be run without executing (always blocking)
         until_rule: Stop at specific rule (e.g., 'fastqc', 'multiqc')
         force: Force re-run even if outputs exist
-    
+        background: If True (and dry_run=False), launch in background and return
+                    immediately with pid + log_file path. Agent should use True;
+                    batch_runner uses False to stay blocking.
+
     Returns:
-        {
-            "status": "success"|"error"|"dry_run",
-            "returncode": int,
-            "jobs": int (for dry-run),
-            "output": str,
-            "command": str
-        }
+        Blocking:   {"status": "success"|"error", "returncode": int, ...}
+        Background: {"status": "running", "pid": int, "log_file": str, ...}
+        Dry-run:    {"status": "dry_run_ok"|"dry_run_error", "total_jobs": int, ...}
     """
     try:
         # Validate config exists
@@ -537,14 +537,43 @@ def run_pipeline(
         if force:
             cmd.append("--forceall")
         
-        # Execute from pipeline root (where Snakefile lives)
+        # ── Background launch (real run only) ──────────────────────────────────
+        if background and not dry_run:
+            log_dir = pipeline_root / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_file = log_dir / f"snakemake_{config_path.stem}.log"
+            pid_file = log_dir / f"snakemake_{config_path.stem}.pid"
+
+            with open(log_file, "w") as lf:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=lf,
+                    stderr=subprocess.STDOUT,
+                    cwd=str(pipeline_root),
+                )
+            pid_file.write_text(str(proc.pid))
+
+            return {
+                "status": "running",
+                "pid": proc.pid,
+                "log_file": str(log_file),
+                "pid_file": str(pid_file),
+                "command": " ".join(cmd),
+                "note": (
+                    "Pipeline launched in background. "
+                    "Use monitor_pipeline to check progress, "
+                    f"or: tail -f {log_file}"
+                ),
+            }
+
+        # ── Blocking execution (dry-run or background=False) ────────────────
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
             cwd=str(pipeline_root)
         )
-        
+
         # Parse output
         stdout = result.stdout
         stderr = result.stderr
@@ -626,7 +655,7 @@ def run_pipeline(
 
             return result_dict
         else:
-            # Real run: return compact summary + last 50 lines of output
+            # Blocking real run: return compact summary
             output_lines = combined.splitlines()
             status = "success" if result.returncode == 0 else "error"
             return {

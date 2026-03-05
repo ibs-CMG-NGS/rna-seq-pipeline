@@ -345,13 +345,14 @@ class PipelineAgent:
             },
             {
                 "name": "run_pipeline",
-                "description": "Execute RNA-seq pipeline with Snakemake. Use dry_run=false to ACTUALLY RUN the pipeline. Use dry_run=true only for preview. When user says '실행해줘', '돌려줘', '시작해줘', 'run', 'execute', 'start' → set dry_run=false.",
+                "description": "Execute RNA-seq pipeline with Snakemake. Use dry_run=false to ACTUALLY RUN the pipeline. Use dry_run=true only for preview. When user says '실행해줘', '돌려줘', '시작해줘', 'run', 'execute', 'start' → set dry_run=false. Real runs (dry_run=false) launch in background by default so the agent stays responsive — use monitor_pipeline to check progress.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "config_file": {"type": "string", "description": "Path to config.yaml"},
                         "cores": {"type": "integer", "description": "Number of cores (e.g. 16)", "default": 8},
-                        "dry_run": {"type": "boolean", "description": "false=actually run pipeline, true=preview only. Default false when user says run/execute/start.", "default": False}
+                        "dry_run": {"type": "boolean", "description": "false=actually run pipeline, true=preview only. Default false when user says run/execute/start.", "default": False},
+                        "background": {"type": "boolean", "description": "true=launch in background and return immediately (default for real runs); false=block until complete (used by batch runner). Always true when dry_run=false.", "default": True}
                     },
                     "required": ["config_file"]
                 }
@@ -820,7 +821,8 @@ class PipelineAgent:
                 result = run_pipeline(
                     config_file=arguments['config_file'],
                     cores=arguments.get('cores', 8),
-                    dry_run=arguments.get('dry_run', True)
+                    dry_run=arguments.get('dry_run', True),
+                    background=arguments.get('background', True),  # non-blocking by default for agent
                 )
                 return result
             except Exception as e:
@@ -1020,9 +1022,9 @@ Examples (Multi-axis Analysis):
 Examples (Pipeline Execution):
 - User: "/data/raw/ 폴더에서 FASTQ 파일 찾아줘" → TOOL_CALL: {{"name": "detect_fastq_files", "parameters": {{"data_dir": "/data/raw"}}}}
 - User: "파이프라인 dry-run 해줘" → TOOL_CALL: {{"name": "run_pipeline", "parameters": {{"config_file": "{cfg}", "dry_run": true, "cores": 8}}}}
-- User: "16 cores로 실행해줘" → TOOL_CALL: {{"name": "run_pipeline", "parameters": {{"config_file": "{cfg}", "dry_run": false, "cores": 16}}}}
-- User: "파이프라인 시작해줘" → TOOL_CALL: {{"name": "run_pipeline", "parameters": {{"config_file": "{cfg}", "dry_run": false, "cores": 8}}}}
-- User: "8코어로 돌려줘" → TOOL_CALL: {{"name": "run_pipeline", "parameters": {{"config_file": "{cfg}", "dry_run": false, "cores": 8}}}}
+- User: "16 cores로 실행해줘" → TOOL_CALL: {{"name": "run_pipeline", "parameters": {{"config_file": "{cfg}", "dry_run": false, "cores": 16, "background": true}}}}
+- User: "파이프라인 시작해줘" → TOOL_CALL: {{"name": "run_pipeline", "parameters": {{"config_file": "{cfg}", "dry_run": false, "cores": 8, "background": true}}}}
+- User: "8코어로 돌려줘" → TOOL_CALL: {{"name": "run_pipeline", "parameters": {{"config_file": "{cfg}", "dry_run": false, "cores": 8, "background": true}}}}
 - User: "리소스 확인해줘" → TOOL_CALL: {{"name": "estimate_resources", "parameters": {{"config_file": "{cfg}", "cores": 8}}}}
 
 Examples (Project/Pipeline Information):

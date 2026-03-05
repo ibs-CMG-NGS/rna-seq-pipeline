@@ -1,0 +1,20 @@
+# Batch configuration for RNA-seq pipeline
+# Run: python scripts/batch_runner.py config/batch/example_batch.yaml [--dry-run] [--resume] [--cores 12]
+
+pipeline_root: /data_3tb/shared/rna-seq-pipeline
+
+# Optional: required only if any project has run_bridge: true
+de_pipeline_dir: /home/user/ngs_pipeline/jinhyeong/RNA-Seq_DE_GO_analysis
+
+# Default cores per Snakemake run (can be overridden with --cores on the CLI)
+cores: 12
+
+projects:
+  - project_id: mouse-chd8
+    config_file: config/projects/config_mouse_chd8_local.yaml
+    run_bridge: true
+
+  # Add more projects below. run_bridge defaults to false if omitted.
+  # - project_id: human-sample
+  #   config_file: config/projects/config_human_sample.yaml
+  #   run_bridge: false
