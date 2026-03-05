@@ -1019,22 +1019,22 @@ Examples (Multi-axis Analysis):
 
 Examples (Pipeline Execution):
 - User: "/data/raw/ 폴더에서 FASTQ 파일 찾아줘" → TOOL_CALL: {{"name": "detect_fastq_files", "parameters": {{"data_dir": "/data/raw"}}}}
-- User: "파이프라인 dry-run 해줘" → TOOL_CALL: {{"name": "run_pipeline", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml", "dry_run": true, "cores": 8}}}}
-- User: "16 cores로 실행해줘" → TOOL_CALL: {{"name": "run_pipeline", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml", "dry_run": false, "cores": 16}}}}
-- User: "파이프라인 시작해줘" → TOOL_CALL: {{"name": "run_pipeline", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml", "dry_run": false, "cores": 8}}}}
-- User: "8코어로 돌려줘" → TOOL_CALL: {{"name": "run_pipeline", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml", "dry_run": false, "cores": 8}}}}
-- User: "리소스 확인해줘" → TOOL_CALL: {{"name": "estimate_resources", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml", "cores": 8}}}}
+- User: "파이프라인 dry-run 해줘" → TOOL_CALL: {{"name": "run_pipeline", "parameters": {{"config_file": "{cfg}", "dry_run": true, "cores": 8}}}}
+- User: "16 cores로 실행해줘" → TOOL_CALL: {{"name": "run_pipeline", "parameters": {{"config_file": "{cfg}", "dry_run": false, "cores": 16}}}}
+- User: "파이프라인 시작해줘" → TOOL_CALL: {{"name": "run_pipeline", "parameters": {{"config_file": "{cfg}", "dry_run": false, "cores": 8}}}}
+- User: "8코어로 돌려줘" → TOOL_CALL: {{"name": "run_pipeline", "parameters": {{"config_file": "{cfg}", "dry_run": false, "cores": 8}}}}
+- User: "리소스 확인해줘" → TOOL_CALL: {{"name": "estimate_resources", "parameters": {{"config_file": "{cfg}", "cores": 8}}}}
 
 Examples (Project/Pipeline Information):
-- User: "이 프로젝트 설정이 어떻게 돼 있어?" → TOOL_CALL: {{"name": "read_project_config", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml"}}}}
-- User: "샘플 목록 보여줘", "어떤 조건이 있어?", "wildtype 샘플 몇 개야?" → TOOL_CALL: {{"name": "read_sample_sheet", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml"}}}}
-- User: "QC 결과 어때?", "매핑률 낮은 샘플 있어?", "어떤 샘플이 실패했어?" → TOOL_CALL: {{"name": "read_qc_results", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml"}}}}
-- User: "현재 상태 보여줘", "진행률 어때?", "얼마나 됐어?", "show status" → TOOL_CALL: {{"name": "monitor_pipeline", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml", "project_id": "mouse-chd8", "base_results_dir": "/data_3tb/shared/output"}}}}
-- User: "CHD8 발현량 보여줘" → TOOL_CALL: {{"name": "read_counts", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml", "genes": ["CHD8"]}}}}
-- User: "가장 많이 발현된 유전자 보여줘" → TOOL_CALL: {{"name": "read_counts", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml", "top_n": 20}}}}
-- User: "로그 보여줘", "에러 있어?" → TOOL_CALL: {{"name": "read_pipeline_logs", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml"}}}}
-- User: "Chd8_HPC_1F_W STAR 로그 보여줘" → TOOL_CALL: {{"name": "read_pipeline_logs", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml", "rule": "star", "sample_id": "Chd8_HPC_1F_W"}}}}
-- User: "DE 분석 연결해줘", "DE 파이프라인으로 넘겨줘", "counts 넘겨줘" → TOOL_CALL: {{"name": "run_bridge", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml", "de_pipeline_dir": "/data_3tb/shared/de-pipeline", "skip_de": true}}}}
+- User: "이 프로젝트 설정이 어떻게 돼 있어?" → TOOL_CALL: {{"name": "read_project_config", "parameters": {{"config_file": "{cfg}"}}}}
+- User: "샘플 목록 보여줘", "어떤 조건이 있어?", "wildtype 샘플 몇 개야?" → TOOL_CALL: {{"name": "read_sample_sheet", "parameters": {{"config_file": "{cfg}"}}}}
+- User: "QC 결과 어때?", "매핑률 낮은 샘플 있어?", "어떤 샘플이 실패했어?" → TOOL_CALL: {{"name": "read_qc_results", "parameters": {{"config_file": "{cfg}"}}}}
+- User: "현재 상태 보여줘", "진행률 어때?", "얼마나 됐어?", "show status" → TOOL_CALL: {{"name": "monitor_pipeline", "parameters": {{"config_file": "{cfg}"}}}}
+- User: "특정유전자 발현량 보여줘" → TOOL_CALL: {{"name": "read_counts", "parameters": {{"config_file": "{cfg}", "genes": ["GENE_NAME"]}}}}
+- User: "가장 많이 발현된 유전자 보여줘" → TOOL_CALL: {{"name": "read_counts", "parameters": {{"config_file": "{cfg}", "top_n": 20}}}}
+- User: "로그 보여줘", "에러 있어?" → TOOL_CALL: {{"name": "read_pipeline_logs", "parameters": {{"config_file": "{cfg}"}}}}
+- User: "SAMPLE_ID STAR 로그 보여줘" → TOOL_CALL: {{"name": "read_pipeline_logs", "parameters": {{"config_file": "{cfg}", "rule": "star", "sample_id": "SAMPLE_ID"}}}}
+- User: "DE 분석 연결해줘", "DE 파이프라인으로 넘겨줘", "counts 넘겨줘" → TOOL_CALL: {{"name": "run_bridge", "parameters": {{"config_file": "{cfg}", "de_pipeline_dir": "{de}", "skip_de": true}}}}
 
 CRITICAL RULE: "실행해줘", "돌려줘", "시작해줘", "run", "execute", "start pipeline" → ALWAYS use run_pipeline with dry_run=false.
 "dry-run", "미리보기" → run_pipeline with dry_run=true.
@@ -1046,6 +1046,10 @@ CRITICAL RULE: "실행해줘", "돌려줘", "시작해줘", "run", "execute", "s
 "설정", "config", "경로", "path", "어떻게 설정" → read_project_config.
 "DE 분석", "DE 연결", "downstream", "counts 넘겨", "de pipeline" → run_bridge (ask for de_pipeline_dir if not given).
 """
+        # Substitute session-state placeholders in examples
+        _cfg = self.current_config or "config/projects/your_project.yaml"
+        _de = self.current_de_pipeline_dir or "/path/to/de_pipeline"
+        examples = examples.replace("{cfg}", _cfg).replace("{de}", _de)
         return base + examples
 
     def _extract_tool_call(self, text: str) -> Optional[Dict]:

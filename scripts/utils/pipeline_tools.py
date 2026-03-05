@@ -1620,6 +1620,7 @@ def run_bridge(
                     "counts_relpath",
                     "project_summary/counts/counts_matrix_clean.csv"
                 ),
+                "species": cfg.get("species"),  # pass through from RNA-seq config
             },
             assume_yes=True,  # non-interactive
         )

@@ -204,8 +204,16 @@ class PipelineBridge:
         condition_col = 'condition' if 'condition' in metadata_df.columns else 'group'
         conditions = metadata_df[condition_col].unique().tolist()
 
-        # Auto-detect species from project_id or use default
-        species = "mouse" if "mouse" in self.project_id.lower() or "chd8" in self.project_id.lower() else "human"
+        # Resolve species: prefer explicit config value, then project_id heuristic
+        _species_raw = self.config.get("species") or ""
+        if _species_raw.lower().startswith("mus") or _species_raw.lower() == "mouse":
+            species = "mouse"
+        elif _species_raw.lower().startswith("homo") or _species_raw.lower() == "human":
+            species = "human"
+        elif "mouse" in self.project_id.lower() or "mus" in self.project_id.lower():
+            species = "mouse"
+        else:
+            species = "human"  # safe default
 
         # Determine control condition by matching known control keywords,
         # falling back to the first condition if none match.
