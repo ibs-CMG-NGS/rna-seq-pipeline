@@ -1136,7 +1136,17 @@ def read_sample_sheet(config_file: str) -> Dict[str, Any]:
 
         ss = Path(sheet_path)
         if not ss.is_absolute():
-            ss = cfg_path.parent.parent / sheet_path
+            # sample_sheet is relative to the pipeline root.
+            # Config files live in config/projects/, so go up 3 levels;
+            # fall back to 2 levels for configs placed directly in config/.
+            for parent in (cfg_path.parent.parent.parent, cfg_path.parent.parent,
+                           cfg_path.parent, Path.cwd()):
+                candidate = parent / sheet_path
+                if candidate.exists():
+                    ss = candidate
+                    break
+            else:
+                ss = cfg_path.parent.parent.parent / sheet_path  # show meaningful error path
         if not ss.exists():
             return {"status": "error", "message": f"Sample sheet not found: {ss}"}
 

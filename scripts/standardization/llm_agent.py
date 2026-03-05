@@ -538,7 +538,7 @@ class PipelineAgent:
                 trimmed[k] = {ek: ev for ek, ev in v.items() if ek != "per_sample"}
                 low = v.get("low_mapping_samples", [])
                 trimmed[k]["low_mapping_samples"] = low[:5]  # show at most 5
-            elif k in ("multiqc_stats", "fastqc_evaluation"):
+            elif k in ("multiqc_stats", "fastqc_evaluation", "samples"):
                 # Replace with a count so the LLM knows data is present
                 if isinstance(v, (list, dict)):
                     trimmed[k + "_count"] = len(v)
