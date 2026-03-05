@@ -1218,12 +1218,27 @@ def read_qc_results(config_file: str) -> Dict[str, Any]:
                          "Total Sequences", "Total Bases", "Sequences flagged as poor quality",
                          "Sequence length", "%GC", "total_deduplicated_percentage",
                          "avg_sequence_length", "median_sequence_length"}
+            # These checks commonly fail for RNA-seq raw data and are NOT quality problems
+            expected_fail_checks = {
+                "per_base_sequence_content",   # random hexamer priming bias
+                "sequence_duplication_levels", # high expression of a few genes
+                "adapter_content",             # expected before trimming
+                "per_sequence_gc_content",     # RNA-seq GC distribution differs from genome
+            }
             fastqc_eval = {}
             for row in fastqc_rows:
                 sample = row.get("Sample", "")
                 checks = {k: v for k, v in row.items() if k not in skip_cols}
-                overall_pass = all(v in ("pass", "warn", "") for v in checks.values())
-                fastqc_eval[sample] = {"overall_pass": overall_pass, "checks": checks}
+                critical_checks = {k: v for k, v in checks.items()
+                                   if k not in expected_fail_checks}
+                overall_pass = all(v in ("pass", "warn", "") for v in critical_checks.values())
+                expected_fails = [k for k in expected_fail_checks
+                                  if checks.get(k) == "fail"]
+                fastqc_eval[sample] = {
+                    "overall_pass": overall_pass,
+                    "checks": checks,
+                    "expected_fails": expected_fails,
+                }
             result["fastqc_evaluation"] = fastqc_eval
         else:
             result["fastqc_evaluation"] = None
@@ -1239,7 +1254,19 @@ def read_qc_results(config_file: str) -> Dict[str, Any]:
                 reader = csv.DictReader(f, delimiter="\t")
                 mqc_rows = list(reader)
             result["multiqc_stats"] = mqc_rows
-            result["multiqc_n_samples"] = len(mqc_rows)
+            # multiqc_general_stats has one row per tool×sample
+            # (BAM paths for STAR/featureCounts + sample names for FastQC/Cutadapt).
+            # Count only unique biological samples: non-BAM rows, strip _1/_2 read suffix.
+            import re as _re
+            sample_names = set()
+            for row in mqc_rows:
+                s = row.get("Sample", "")
+                if ".bam" in s:
+                    continue  # BAM path rows — skip
+                s = _re.sub(r'[_-][12]$', '', s)  # strip _1/_2 read suffix
+                if s:
+                    sample_names.add(s)
+            result["multiqc_n_samples"] = len(sample_names) if sample_names else len(mqc_rows)
         else:
             result["multiqc_stats"] = None
 
@@ -1283,19 +1310,26 @@ def read_qc_results(config_file: str) -> Dict[str, Any]:
         else:
             result["star_alignment"] = None
 
-        # Overall summary
-        n_pass = n_fail = 0
+        # Overall summary — count at file level (R1+R2) and sample level
+        n_pass_files = n_fail_files = 0
         if result["fastqc_evaluation"] and isinstance(result["fastqc_evaluation"], dict):
             for v in result["fastqc_evaluation"].values():
                 if isinstance(v, dict):
                     if v.get("overall_pass"):
-                        n_pass += 1
+                        n_pass_files += 1
                     else:
-                        n_fail += 1
+                        n_fail_files += 1
+        n_fastqc_files = n_pass_files + n_fail_files
 
         result["summary"] = {
-            "fastqc_pass": n_pass,
-            "fastqc_fail": n_fail,
+            "fastqc_files_evaluated": n_fastqc_files,
+            "fastqc_critical_pass": n_pass_files,
+            "fastqc_critical_fail": n_fail_files,
+            "fastqc_note": (
+                "per_base_sequence_content, sequence_duplication_levels, adapter_content "
+                "failures are expected for RNA-seq raw data and excluded from pass/fail."
+            ),
+            "multiqc_n_samples": result.get("multiqc_n_samples"),
             "star_avg_mapping_pct": result["star_alignment"]["avg_uniquely_mapped_pct"] if result["star_alignment"] else None,
             "multiqc_available": result["multiqc_stats"] is not None,
         }
