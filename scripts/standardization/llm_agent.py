@@ -822,8 +822,32 @@ class PipelineAgent:
             except Exception as e:
                 return {"status": "error", "message": str(e)}
 
+        # ── Aliases for commonly hallucinated tool names ─────────────────
+        elif tool_name in ("get_project_status", "check_pipeline_status", "pipeline_status"):
+            # Redirect to monitor_pipeline using config_file
+            try:
+                from scripts.utils.pipeline_tools import monitor_pipeline
+                import yaml as _yaml
+                config_file = arguments.get('config_file', '')
+                with open(config_file) as _f:
+                    _cfg = _yaml.safe_load(_f)
+                project_id = _cfg.get('project_id', '')
+                results_dir = _cfg.get('results_dir') or f"{_cfg.get('base_results_dir','')}/{project_id}"
+                base = str(Path(results_dir).parent) if project_id and results_dir.endswith(project_id) else results_dir
+                return monitor_pipeline(
+                    project_id=project_id,
+                    base_results_dir=base,
+                    config_file=config_file,
+                )
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+
         else:
-            return {"error": f"Unknown tool: {tool_name}"}
+            available = [t["function"]["name"] for t in self._define_tools()]
+            return {
+                "error": f"Unknown tool: '{tool_name}'. Available tools: {available}. "
+                         f"Please call one of the available tools."
+            }
     
     def _build_system_prompt(self, native_tools: bool = False) -> str:
         """Build system prompt with project context and tool usage instructions.
@@ -905,6 +929,7 @@ Examples (Project/Pipeline Information):
 - User: "이 프로젝트 설정이 어떻게 돼 있어?" → TOOL_CALL: {{"name": "read_project_config", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml"}}}}
 - User: "샘플 목록 보여줘", "어떤 조건이 있어?", "wildtype 샘플 몇 개야?" → TOOL_CALL: {{"name": "read_sample_sheet", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml"}}}}
 - User: "QC 결과 어때?", "매핑률 낮은 샘플 있어?", "어떤 샘플이 실패했어?" → TOOL_CALL: {{"name": "read_qc_results", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml"}}}}
+- User: "현재 상태 보여줘", "진행률 어때?", "얼마나 됐어?", "show status" → TOOL_CALL: {{"name": "monitor_pipeline", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml", "project_id": "mouse-chd8", "base_results_dir": "/data_3tb/shared/output"}}}}
 - User: "CHD8 발현량 보여줘" → TOOL_CALL: {{"name": "read_counts", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml", "genes": ["CHD8"]}}}}
 - User: "가장 많이 발현된 유전자 보여줘" → TOOL_CALL: {{"name": "read_counts", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml", "top_n": 20}}}}
 - User: "로그 보여줘", "에러 있어?" → TOOL_CALL: {{"name": "read_pipeline_logs", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml"}}}}
@@ -1122,12 +1147,20 @@ CRITICAL RULE: "실행해줘", "돌려줘", "시작해줘", "run", "execute", "s
                     tool_result = self._execute_tool(name, args)
                     results.append({"tool": name, "result": tool_result})
 
+                    # If tool was unknown, include a correction hint
+                    tool_content = json.dumps(tool_result, ensure_ascii=False)
+                    if "error" in tool_result and "Unknown tool" in str(tool_result.get("error", "")):
+                        tool_content = json.dumps({
+                            "error": tool_result["error"],
+                            "hint": "Use one of the available tools listed above."
+                        }, ensure_ascii=False)
+
                     # Append tool turn to conversation
                     messages.append({"role": "assistant", "content": None,
                                      "tool_calls": [tc]})
                     messages.append({
                         "role": "tool",
-                        "content": json.dumps(tool_result, ensure_ascii=False),
+                        "content": tool_content,
                     })
 
                 # Ask LLM to summarise all tool results.
@@ -1146,7 +1179,14 @@ CRITICAL RULE: "실행해줘", "돌려줘", "시작해줘", "run", "execute", "s
                     messages=messages,
                     options={"temperature": 0.7, "num_ctx": 8192},
                 )
-                return summary["message"]["content"]
+                content = summary["message"].get("content", "").strip()
+                if not content:
+                    # LLM returned empty — build a fallback summary from raw results
+                    parts = []
+                    for r in results:
+                        parts.append(f"[{r['tool']}] {json.dumps(r['result'], ensure_ascii=False)[:500]}")
+                    content = "도구 실행 결과:\n" + "\n".join(parts)
+                return content
 
             # ── Plain text reply (no tool needed) ─────────────────────────
             return msg.get("content", "")
