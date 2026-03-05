@@ -135,9 +135,9 @@ class PipelineAgent:
         # Conversation history
         self.conversation_history = []
         
-        # Session state: remember the last used config file path
-        # so the LLM doesn't need to repeat it in every message
+        # Session state: remember paths used in this session
         self.current_config: Optional[str] = None
+        self.current_de_pipeline_dir: Optional[str] = None
     
     def _define_tools(self) -> List[Dict]:
         """Define available tools for LLM function calling."""
@@ -524,6 +524,32 @@ class PipelineAgent:
         
         return arguments
 
+    def _resolve_de_pipeline_dir(self, arguments: Dict) -> Dict:
+        """
+        Auto-correct de_pipeline_dir in run_bridge arguments.
+        1. If LLM passed a placeholder → use self.current_de_pipeline_dir
+        2. If a real path is provided → update self.current_de_pipeline_dir
+        """
+        de = arguments.get('de_pipeline_dir')
+        is_placeholder = (
+            not de
+            or de in ('None', 'null', '')
+            or de.startswith('path/to/')
+            or de.startswith('/path/')
+            or de.startswith('<')
+            or 'de/go/analysis/pipeline' in de
+            or 'de-pipeline' in de
+            or 'your_de_pipeline' in de
+        )
+        if is_placeholder:
+            if self.current_de_pipeline_dir:
+                arguments = dict(arguments)
+                arguments['de_pipeline_dir'] = self.current_de_pipeline_dir
+            # else: leave as-is — run_bridge will return a clear error
+        else:
+            self.current_de_pipeline_dir = de
+        return arguments
+
     def _trim_tool_result_for_llm(self, result: Dict) -> Dict:
         """
         Return a compact version of a tool result for the LLM message.
@@ -837,6 +863,7 @@ class PipelineAgent:
         # ── DE analysis bridge ────────────────────────────────────────────
         elif tool_name == "run_bridge":
             try:
+                arguments = self._resolve_de_pipeline_dir(arguments)
                 from scripts.utils.pipeline_tools import run_bridge
                 return run_bridge(
                     config_file=arguments['config_file'],
@@ -957,8 +984,11 @@ IMPORTANT:
 5. For ALL pipeline tools (validate_input_data, run_pipeline, estimate_resources, monitor_pipeline):
    ALWAYS use the CURRENT CONFIG FILE: {self.current_config or 'not set — ask user for config file path'}
    Do NOT invent config file paths like "path/to/config.yaml" or "config.yaml"
+6. For run_bridge: ALWAYS use the CURRENT DE PIPELINE DIR: {self.current_de_pipeline_dir or 'not set — ask user for DE pipeline directory path'}
+   Do NOT invent de_pipeline_dir paths.
 
 Current session config: {self.current_config or 'not yet set'}
+Current DE pipeline dir: {self.current_de_pipeline_dir or 'not yet set'}
 
 Be conversational, clear, and actionable. When showing numbers, include units and context.
 """

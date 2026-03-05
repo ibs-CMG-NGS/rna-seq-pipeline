@@ -60,11 +60,10 @@ class PipelineBridge:
             print(f"❌ Counts matrix not found: {counts_file}")
             return False
         
-        # Check project summary
+        # Check project summary (optional — not required for counts transfer)
         summary_relpath = self.config.get('summary_relpath', 'project_summary.json')
         summary_file = self.rnaseq_output / summary_relpath
         if not summary_file.exists():
-            print(f"⚠️  Project summary not found: {summary_file}")
             return True  # Not critical, continue
         
         # Check QC status
@@ -208,12 +207,21 @@ class PipelineBridge:
         # Auto-detect species from project_id or use default
         species = "mouse" if "mouse" in self.project_id.lower() or "chd8" in self.project_id.lower() else "human"
 
-        # Determine pairwise comparisons (all vs first condition as control)
+        # Determine control condition by matching known control keywords,
+        # falling back to the first condition if none match.
+        _control_patterns = ('wildtype', 'wild_type', 'wt', 'control', 'ctrl',
+                              'normal', 'vehicle', 'mock', 'untreated',
+                              'scramble', 'sham', 'naive')
+        control_condition = next(
+            (c for c in conditions
+             if c.lower().replace('-', '_').replace(' ', '_') in _control_patterns
+             or any(c.lower().startswith(p) for p in _control_patterns)),
+            conditions[0]
+        )
         # Format: [treatment, control] — matches template and Snakefile parsing
-        control_condition = conditions[0]  # Assume first is control
-        pairwise_comparisons = []
-        for cond in conditions[1:]:
-            pairwise_comparisons.append([cond, control_condition])
+        pairwise_comparisons = [
+            [c, control_condition] for c in conditions if c != control_condition
+        ]
 
         # Update config with project-specific values
         config['species'] = species
