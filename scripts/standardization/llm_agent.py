@@ -134,6 +134,10 @@ class PipelineAgent:
         
         # Conversation history
         self.conversation_history = []
+        
+        # Session state: remember the last used config file path
+        # so the LLM doesn't need to repeat it in every message
+        self.current_config: Optional[str] = None
     
     def _define_tools(self) -> List[Dict]:
         """Define available tools for LLM function calling."""
@@ -388,8 +392,42 @@ class PipelineAgent:
             }
         ]
     
+    def _resolve_config_file(self, arguments: Dict) -> Dict:
+        """
+        Auto-correct config_file in arguments:
+        1. If LLM passed a placeholder (path/to/..., <...>, None) → use self.current_config
+        2. If a real path is provided → update self.current_config for future calls
+        """
+        cfg = arguments.get('config_file')
+        
+        # Detect placeholder / hallucinated paths
+        is_placeholder = (
+            not cfg
+            or cfg in ('path/to/config.yaml', '<config_file>', 'config.yaml', 'None', 'null')
+            or cfg.startswith('path/to/')
+            or cfg.startswith('<')
+            or cfg.startswith('/path/')
+        )
+        
+        if is_placeholder:
+            if self.current_config:
+                arguments = dict(arguments)
+                arguments['config_file'] = self.current_config
+            # else: leave as-is, tool will return a proper error
+        else:
+            # Real path provided — remember it for next time
+            self.current_config = cfg
+        
+        return arguments
+
     def _execute_tool(self, tool_name: str, arguments: Dict) -> Any:
         """Execute a tool and return results."""
+        
+        # Auto-resolve config_file for all tools that use it
+        if 'config_file' in arguments or tool_name in (
+            'validate_input_data', 'run_pipeline', 'estimate_resources'
+        ):
+            arguments = self._resolve_config_file(arguments)
         
         if tool_name == "get_project_status":
             result = subprocess.run([
@@ -696,6 +734,11 @@ IMPORTANT:
 2. Extract parameters from user's natural language
 3. If user's intent is unclear, ask for clarification
 4. After tool execution, explain the results conversationally in Korean
+5. For ALL pipeline tools (validate_input_data, run_pipeline, estimate_resources, monitor_pipeline):
+   ALWAYS use the CURRENT CONFIG FILE: {self.current_config or 'not set — ask user for config file path'}
+   Do NOT invent config file paths like "path/to/config.yaml" or "config.yaml"
+
+Current session config: {self.current_config or 'not yet set'}
 
 Be conversational, clear, and actionable. When showing numbers, include units and context.
 """
