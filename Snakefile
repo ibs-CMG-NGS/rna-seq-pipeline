@@ -20,11 +20,22 @@ PROJECT_ID = config.get("project_id", "default_project")
 PIPELINE_TYPE = config.get("pipeline_type", "rna-seq")
 
 # 디렉토리 경로 함수
+def get_project_results_dir():
+    """프로젝트 결과 루트 디렉토리 반환.
+    우선순위:
+      1. results_dir 가 명시적으로 지정된 경우 → 그대로 사용 (project_id 붙이지 않음)
+      2. base_results_dir 만 있는 경우 → base_results_dir / project_id
+      3. 둘 다 없으면 fallback
+    """
+    if "results_dir" in config:
+        return config["results_dir"]
+    base = config.get("base_results_dir", "/home/ngs/data/results")
+    return f"{base}/{PROJECT_ID}"
+
 def get_sample_dir(sample_id):
     """샘플별 디렉토리 경로 반환"""
     if USE_STANDARD:
-        base = config.get("base_results_dir", config.get("results_dir", "/home/ngs/data/results"))
-        return f"{base}/{PROJECT_ID}/{sample_id}/{PIPELINE_TYPE}"
+        return f"{get_project_results_dir()}/{sample_id}/{PIPELINE_TYPE}"
     else:
         return config.get("results_dir", "results")
 
@@ -86,9 +97,9 @@ if not USE_STANDARD:
     LOGS_DIR = config.get("logs_dir", "logs")
 else:
     # 표준 구조 경로
-    # 'base_results_dir' 또는 'results_dir' 키 모두 지원
-    BASE_RESULTS = config.get("base_results_dir", config.get("results_dir", "/home/ngs/data/results"))
-    PROJECT_DIR = f"{BASE_RESULTS}/{PROJECT_ID}"
+    # 우선순위: results_dir 명시 → 그대로 사용 (project_id 붙이지 않음)
+    #           results_dir 없음 → base_results_dir / project_id
+    PROJECT_DIR = get_project_results_dir()
     PROJECT_SUMMARY_DIR = f"{PROJECT_DIR}/project_summary"
     METADATA_DIR = f"{PROJECT_DIR}/metadata"
     
