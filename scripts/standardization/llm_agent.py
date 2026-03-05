@@ -400,6 +400,39 @@ class PipelineAgent:
                     "required": ["config_file"]
                 }
             },
+            # DE analysis bridge
+            {
+                "name": "run_bridge",
+                "description": (
+                    "Transfer RNA-seq counts matrix to DE/GO analysis pipeline. "
+                    "Use when user asks to: start DE analysis, connect to DE pipeline, "
+                    "'DE 분석 연결해줘', 'DE 파이프라인으로 넘겨줘', 'counts 넘겨줘'. "
+                    "By default skip_de=true — only prepares files (counts copy + metadata + DE config). "
+                    "Set skip_de=false only if user explicitly asks to RUN DE analysis immediately."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "config_file": {
+                            "type": "string",
+                            "description": "Path to RNA-seq project config YAML"
+                        },
+                        "de_pipeline_dir": {
+                            "type": "string",
+                            "description": "Absolute path to DE/GO analysis pipeline directory"
+                        },
+                        "skip_de": {
+                            "type": "boolean",
+                            "description": "If true (default), only prepare files. If false, also trigger DE Snakemake."
+                        },
+                        "dry_run": {
+                            "type": "boolean",
+                            "description": "If true, show what would be done without writing files."
+                        }
+                    },
+                    "required": ["config_file", "de_pipeline_dir"]
+                }
+            },
             # Phase 8C: Project/Pipeline information reading tools
             {
                 "name": "read_project_config",
@@ -777,6 +810,19 @@ class PipelineAgent:
             except Exception as e:
                 return {"status": "error", "message": str(e)}
 
+        # ── DE analysis bridge ────────────────────────────────────────────
+        elif tool_name == "run_bridge":
+            try:
+                from scripts.utils.pipeline_tools import run_bridge
+                return run_bridge(
+                    config_file=arguments['config_file'],
+                    de_pipeline_dir=arguments['de_pipeline_dir'],
+                    skip_de=arguments.get('skip_de', True),
+                    dry_run=arguments.get('dry_run', False),
+                )
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+
         # ── Phase 8C: reading tools ───────────────────────────────────────
         elif tool_name == "read_project_config":
             try:
@@ -934,6 +980,7 @@ Examples (Project/Pipeline Information):
 - User: "가장 많이 발현된 유전자 보여줘" → TOOL_CALL: {{"name": "read_counts", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml", "top_n": 20}}}}
 - User: "로그 보여줘", "에러 있어?" → TOOL_CALL: {{"name": "read_pipeline_logs", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml"}}}}
 - User: "Chd8_HPC_1F_W STAR 로그 보여줘" → TOOL_CALL: {{"name": "read_pipeline_logs", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml", "rule": "star", "sample_id": "Chd8_HPC_1F_W"}}}}
+- User: "DE 분석 연결해줘", "DE 파이프라인으로 넘겨줘", "counts 넘겨줘" → TOOL_CALL: {{"name": "run_bridge", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml", "de_pipeline_dir": "/data_3tb/shared/de-pipeline", "skip_de": true}}}}
 
 CRITICAL RULE: "실행해줘", "돌려줘", "시작해줘", "run", "execute", "start pipeline" → ALWAYS use run_pipeline with dry_run=false.
 "dry-run", "미리보기" → run_pipeline with dry_run=true.
@@ -943,6 +990,7 @@ CRITICAL RULE: "실행해줘", "돌려줘", "시작해줘", "run", "execute", "s
 "발현", "expression", "counts", "gene" → read_counts.
 "로그", "log", "에러", "error" → read_pipeline_logs.
 "설정", "config", "경로", "path", "어떻게 설정" → read_project_config.
+"DE 분석", "DE 연결", "downstream", "counts 넘겨", "de pipeline" → run_bridge (ask for de_pipeline_dir if not given).
 """
         return base + examples
 

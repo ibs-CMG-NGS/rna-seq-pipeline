@@ -1460,3 +1460,164 @@ def read_pipeline_logs(
         }
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DE analysis bridge
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run_bridge(
+    config_file: str,
+    de_pipeline_dir: str,
+    skip_de: bool = True,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """
+    Transfer RNA-seq counts matrix to DE/GO analysis pipeline.
+
+    Reads rnaseq output dir from config_file (results_dir or base_results_dir/project_id),
+    then runs PipelineBridge to:
+      1. Verify counts matrix exists
+      2. Copy counts to DE pipeline input
+      3. Generate metadata TSV from sample sheet
+      4. Generate DE pipeline config.yml
+      5. Optionally trigger DE/GO Snakemake (skip_de=False)
+
+    Args:
+        config_file:     Path to RNA-seq project config YAML
+        de_pipeline_dir: Path to DE/GO analysis pipeline directory
+        skip_de:         If True (default), only prepare files — do NOT run DE pipeline
+        dry_run:         If True, show what would be done without writing files
+
+    Returns:
+        {
+            "status": "success" | "error",
+            "rnaseq_output": str,
+            "de_pipeline": str,
+            "counts_file": str | None,
+            "metadata_file": str | None,
+            "de_config_file": str | None,
+            "message": str
+        }
+    """
+    try:
+        import yaml as _yaml
+
+        cfg_path = Path(config_file)
+        if not cfg_path.exists():
+            return {"status": "error", "message": f"Config not found: {config_file}"}
+
+        with open(cfg_path) as f:
+            cfg = _yaml.safe_load(f)
+
+        project_id = cfg.get("project_id", "project")
+
+        # Resolve RNA-seq output directory (same logic as Snakefile)
+        if "results_dir" in cfg:
+            rnaseq_output = Path(cfg["results_dir"])
+        else:
+            base = cfg.get("base_results_dir", "results")
+            rnaseq_output = Path(base) / project_id
+
+        de_pipeline = Path(de_pipeline_dir)
+
+        if not rnaseq_output.exists():
+            return {
+                "status": "error",
+                "message": f"RNA-seq output not found: {rnaseq_output}. "
+                           f"Has the pipeline completed?",
+                "rnaseq_output": str(rnaseq_output),
+            }
+
+        if not de_pipeline.exists():
+            return {
+                "status": "error",
+                "message": f"DE/GO pipeline directory not found: {de_pipeline}",
+                "de_pipeline": str(de_pipeline),
+            }
+
+        # Import PipelineBridge from scripts/bridge_to_de_pipeline.py
+        bridge_script = Path(__file__).parent.parent / "bridge_to_de_pipeline.py"
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("bridge_to_de_pipeline", bridge_script)
+        bridge_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bridge_mod)
+        PipelineBridge = bridge_mod.PipelineBridge
+
+        bridge = PipelineBridge(
+            rnaseq_output_dir=rnaseq_output,
+            de_pipeline_dir=de_pipeline,
+            project_id=project_id,
+            config={
+                "sample_sheet_dir": str(cfg_path.parent.parent / "samples"),
+                "counts_relpath": cfg.get(
+                    "counts_relpath",
+                    "project_summary/counts/counts_matrix_clean.csv"
+                ),
+            },
+            assume_yes=True,  # non-interactive
+        )
+
+        # Step 1: check completion
+        if not bridge.check_rnaseq_completion():
+            return {
+                "status": "error",
+                "message": "RNA-seq pipeline not complete. counts_matrix_clean.csv not found.",
+                "rnaseq_output": str(rnaseq_output),
+            }
+
+        result: Dict[str, Any] = {
+            "status": "success",
+            "rnaseq_output": str(rnaseq_output),
+            "de_pipeline": str(de_pipeline),
+            "project_id": project_id,
+            "dry_run": dry_run,
+        }
+
+        if dry_run:
+            counts_relpath = cfg.get(
+                "counts_relpath",
+                "project_summary/counts/counts_matrix_clean.csv"
+            )
+            counts_file = rnaseq_output / counts_relpath
+            result["message"] = (
+                f"DRY RUN — would copy {counts_file} to {de_pipeline}/data/raw/, "
+                f"generate metadata and DE config for project '{project_id}'."
+            )
+            result["counts_exists"] = counts_file.exists()
+            return result
+
+        # Step 2: copy counts
+        counts_dest = bridge.prepare_de_input()
+        result["counts_file"] = str(counts_dest)
+
+        # Step 3: metadata
+        metadata_dest = bridge.generate_metadata_template()
+        result["metadata_file"] = str(metadata_dest) if metadata_dest else None
+
+        # Step 4: DE config
+        if metadata_dest:
+            de_config = bridge.generate_de_config(counts_dest, metadata_dest)
+            result["de_config_file"] = str(de_config)
+        else:
+            result["de_config_file"] = None
+
+        # Step 5: optionally run DE
+        if not skip_de and metadata_dest and de_config:
+            bridge.trigger_de_analysis(dry_run=False, config_file=de_config)
+            result["de_triggered"] = True
+        else:
+            result["de_triggered"] = False
+
+        result["message"] = (
+            f"Bridge complete. counts → {result['counts_file']}, "
+            f"metadata → {result['metadata_file']}, "
+            f"DE config → {result['de_config_file']}. "
+            + ("DE analysis triggered." if result["de_triggered"]
+               else "DE analysis NOT triggered (skip_de=True). Run manually when ready.")
+        )
+        return result
+
+    except Exception as e:
+        import traceback
+        return {"status": "error", "message": str(e), "traceback": traceback.format_exc()}
