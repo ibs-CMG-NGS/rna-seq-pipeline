@@ -399,7 +399,68 @@ class PipelineAgent:
                     },
                     "required": ["config_file"]
                 }
-            }
+            },
+            # Phase 8C: Project/Pipeline information reading tools
+            {
+                "name": "read_project_config",
+                "description": "Read and summarise the project config file. Use when user asks about project setup, paths, species, genome build, or any config settings.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "config_file": {"type": "string", "description": "Path to config.yaml"}
+                    },
+                    "required": ["config_file"]
+                }
+            },
+            {
+                "name": "read_sample_sheet",
+                "description": "Read the sample sheet to list all samples, conditions, tissues, replicates and FASTQ paths. Use when user asks about samples, conditions, or group breakdown.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "config_file": {"type": "string", "description": "Path to config.yaml (sample_sheet path is read from it)"}
+                    },
+                    "required": ["config_file"]
+                }
+            },
+            {
+                "name": "read_qc_results",
+                "description": "Read QC results: FastQC evaluation, MultiQC stats, STAR mapping rates. Use when user asks about QC status, mapping rates, failed samples, or data quality.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "config_file": {"type": "string", "description": "Path to config.yaml"}
+                    },
+                    "required": ["config_file"]
+                }
+            },
+            {
+                "name": "read_counts",
+                "description": "Read the featureCounts expression matrix. Use when user asks about gene expression, counts, specific gene levels, or top expressed genes.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "config_file": {"type": "string", "description": "Path to config.yaml"},
+                        "genes": {"type": "array", "items": {"type": "string"}, "description": "Specific gene IDs/names to look up (optional)"},
+                        "top_n": {"type": "integer", "description": "Return top N most variable genes if genes not specified", "default": 20}
+                    },
+                    "required": ["config_file"]
+                }
+            },
+            {
+                "name": "read_pipeline_logs",
+                "description": "Read pipeline execution logs. Use when user asks about errors, warnings, a specific sample's log, or pipeline execution details.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "config_file": {"type": "string", "description": "Path to config.yaml"},
+                        "rule": {"type": "string", "description": "Specific rule: cutadapt / star / fastqc / featurecounts (optional)"},
+                        "sample_id": {"type": "string", "description": "Specific sample ID (optional)"},
+                        "tail_lines": {"type": "integer", "description": "Number of tail lines per log", "default": 50}
+                    },
+                    "required": ["config_file"]
+                }
+            },
         ]
     
     def _resolve_config_file(self, arguments: Dict) -> Dict:
@@ -716,6 +777,51 @@ class PipelineAgent:
             except Exception as e:
                 return {"status": "error", "message": str(e)}
 
+        # ── Phase 8C: reading tools ───────────────────────────────────────
+        elif tool_name == "read_project_config":
+            try:
+                from scripts.utils.pipeline_tools import read_project_config
+                return read_project_config(arguments['config_file'])
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+
+        elif tool_name == "read_sample_sheet":
+            try:
+                from scripts.utils.pipeline_tools import read_sample_sheet
+                return read_sample_sheet(arguments['config_file'])
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+
+        elif tool_name == "read_qc_results":
+            try:
+                from scripts.utils.pipeline_tools import read_qc_results
+                return read_qc_results(arguments['config_file'])
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+
+        elif tool_name == "read_counts":
+            try:
+                from scripts.utils.pipeline_tools import read_counts
+                return read_counts(
+                    config_file=arguments['config_file'],
+                    genes=arguments.get('genes'),
+                    top_n=arguments.get('top_n', 20),
+                )
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+
+        elif tool_name == "read_pipeline_logs":
+            try:
+                from scripts.utils.pipeline_tools import read_pipeline_logs
+                return read_pipeline_logs(
+                    config_file=arguments['config_file'],
+                    rule=arguments.get('rule'),
+                    sample_id=arguments.get('sample_id'),
+                    tail_lines=arguments.get('tail_lines', 50),
+                )
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+
         else:
             return {"error": f"Unknown tool: {tool_name}"}
     
@@ -795,9 +901,23 @@ Examples (Pipeline Execution):
 - User: "8코어로 돌려줘" → TOOL_CALL: {{"name": "run_pipeline", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml", "dry_run": false, "cores": 8}}}}
 - User: "리소스 확인해줘" → TOOL_CALL: {{"name": "estimate_resources", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml", "cores": 8}}}}
 
+Examples (Project/Pipeline Information):
+- User: "이 프로젝트 설정이 어떻게 돼 있어?" → TOOL_CALL: {{"name": "read_project_config", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml"}}}}
+- User: "샘플 목록 보여줘", "어떤 조건이 있어?", "wildtype 샘플 몇 개야?" → TOOL_CALL: {{"name": "read_sample_sheet", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml"}}}}
+- User: "QC 결과 어때?", "매핑률 낮은 샘플 있어?", "어떤 샘플이 실패했어?" → TOOL_CALL: {{"name": "read_qc_results", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml"}}}}
+- User: "CHD8 발현량 보여줘" → TOOL_CALL: {{"name": "read_counts", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml", "genes": ["CHD8"]}}}}
+- User: "가장 많이 발현된 유전자 보여줘" → TOOL_CALL: {{"name": "read_counts", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml", "top_n": 20}}}}
+- User: "로그 보여줘", "에러 있어?" → TOOL_CALL: {{"name": "read_pipeline_logs", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml"}}}}
+- User: "Chd8_HPC_1F_W STAR 로그 보여줘" → TOOL_CALL: {{"name": "read_pipeline_logs", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml", "rule": "star", "sample_id": "Chd8_HPC_1F_W"}}}}
+
 CRITICAL RULE: "실행해줘", "돌려줘", "시작해줘", "run", "execute", "start pipeline" → ALWAYS use run_pipeline with dry_run=false.
-"dry-run", "미리보기", "확인해줘" → run_pipeline with dry_run=true.
+"dry-run", "미리보기" → run_pipeline with dry_run=true.
 "리소스", "resource", "얼마나 걸려" → estimate_resources (NOT run_pipeline).
+"샘플", "조건", "condition", "sample list" → read_sample_sheet.
+"QC", "mapping", "매핑", "품질" → read_qc_results.
+"발현", "expression", "counts", "gene" → read_counts.
+"로그", "log", "에러", "error" → read_pipeline_logs.
+"설정", "config", "경로", "path", "어떻게 설정" → read_project_config.
 """
         return base + examples
 

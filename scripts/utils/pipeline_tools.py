@@ -1055,3 +1055,408 @@ if __name__ == '__main__':
         exit(1)
     
     print(json.dumps(result, indent=2, ensure_ascii=False))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 8C: Project/Pipeline information reading tools
+# ─────────────────────────────────────────────────────────────────────────────
+
+def read_project_config(config_file: str) -> Dict[str, Any]:
+    """
+    Read and summarise a project config YAML for the agent.
+
+    Returns a human-readable summary of the project setup so the LLM can
+    answer questions like "이 프로젝트 설정이 어떻게 돼 있어?" without the user
+    having to provide every detail.
+    """
+    try:
+        path = Path(config_file)
+        if not path.exists():
+            return {"status": "error", "message": f"Config not found: {config_file}"}
+
+        with open(path) as f:
+            cfg = yaml.safe_load(f)
+
+        # Count samples via sample sheet if available
+        n_samples = "unknown"
+        conditions: List[str] = []
+        sample_sheet_path = cfg.get("sample_sheet", "")
+        if sample_sheet_path:
+            ss = Path(sample_sheet_path)
+            if not ss.is_absolute():
+                ss = path.parent.parent / sample_sheet_path
+            if ss.exists():
+                import csv
+                with open(ss) as f2:
+                    reader = csv.DictReader(f2, delimiter="\t")
+                    rows = list(reader)
+                n_samples = len(rows)
+                if rows and "condition" in rows[0]:
+                    conditions = sorted(set(r["condition"] for r in rows))
+
+        return {
+            "status": "success",
+            "project_id":      cfg.get("project_id"),
+            "species":         cfg.get("species"),
+            "genome_build":    cfg.get("genome_build"),
+            "n_samples":       n_samples,
+            "conditions":      conditions,
+            "data_dir":        cfg.get("data_dir"),
+            "results_dir":     cfg.get("base_results_dir") or cfg.get("results_dir"),
+            "star_index":      cfg.get("star_index"),
+            "annotation_gtf":  cfg.get("annotation_gtf") or cfg.get("genes_gtf"),
+            "strandedness":    cfg.get("strandedness"),
+            "threads":         cfg.get("threads") or cfg.get("star_threads"),
+            "sample_sheet":    str(ss) if sample_sheet_path else None,
+            "use_sample_sheet": cfg.get("use_sample_sheet"),
+            "raw_config":      cfg,
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+def read_sample_sheet(config_file: str) -> Dict[str, Any]:
+    """
+    Read the sample sheet referenced in a config file and return a structured
+    summary: sample list, conditions, replicates, FASTQ paths.
+
+    Answers: "샘플 목록 보여줘", "어떤 조건이 있어?", "wildtype 샘플이 몇 개야?"
+    """
+    try:
+        cfg_path = Path(config_file)
+        if not cfg_path.exists():
+            return {"status": "error", "message": f"Config not found: {config_file}"}
+
+        with open(cfg_path) as f:
+            cfg = yaml.safe_load(f)
+
+        sheet_path = cfg.get("sample_sheet", "")
+        if not sheet_path:
+            return {"status": "error", "message": "No sample_sheet key in config"}
+
+        ss = Path(sheet_path)
+        if not ss.is_absolute():
+            ss = cfg_path.parent.parent / sheet_path
+        if not ss.exists():
+            return {"status": "error", "message": f"Sample sheet not found: {ss}"}
+
+        import csv
+        with open(ss) as f2:
+            reader = csv.DictReader(f2, delimiter="\t")
+            rows = list(reader)
+
+        if not rows:
+            return {"status": "error", "message": "Sample sheet is empty"}
+
+        # Build summary
+        conditions: Dict[str, List[str]] = {}
+        tissues: Dict[str, List[str]] = {}
+        for row in rows:
+            sid = row.get("sample_id", "")
+            cond = row.get("condition", "unknown")
+            tissue = row.get("tissue", "")
+            conditions.setdefault(cond, []).append(sid)
+            if tissue:
+                tissues.setdefault(tissue, []).append(sid)
+
+        return {
+            "status": "success",
+            "n_samples": len(rows),
+            "columns": list(rows[0].keys()),
+            "conditions": {k: {"count": len(v), "samples": v} for k, v in conditions.items()},
+            "tissues": {k: {"count": len(v), "samples": v} for k, v in tissues.items()} if tissues else {},
+            "samples": rows,  # full list for detailed queries
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+def read_qc_results(config_file: str) -> Dict[str, Any]:
+    """
+    Read QC results from the output directory:
+    - FastQC evaluation JSON (per-sample pass/fail + metrics)
+    - MultiQC general_stats (mapping rates, duplication, GC)
+    - STAR log summary (uniquely mapped %)
+
+    Answers: "QC 결과 어때?", "매핑률 낮은 샘플 있어?", "어떤 샘플이 실패했어?"
+    """
+    try:
+        cfg_path = Path(config_file)
+        if not cfg_path.exists():
+            return {"status": "error", "message": f"Config not found: {config_file}"}
+
+        with open(cfg_path) as f:
+            cfg = yaml.safe_load(f)
+
+        base = Path(cfg.get("base_results_dir") or cfg.get("results_dir", "results"))
+        project_id = cfg.get("project_id", "")
+        project_dir = base / project_id if (base / project_id).exists() else base
+        qc_dir = project_dir / "project_summary" / "qc"
+
+        result: Dict[str, Any] = {"status": "success", "project_dir": str(project_dir)}
+
+        # 1. FastQC evaluation JSON
+        eval_json = qc_dir / "fastqc_evaluation.json"
+        if eval_json.exists():
+            with open(eval_json) as f:
+                eval_data = json.load(f)
+            result["fastqc_evaluation"] = eval_data
+        else:
+            result["fastqc_evaluation"] = None
+
+        # 2. MultiQC general stats TSV
+        mqc_stats = qc_dir / "multiqc_data" / "multiqc_general_stats.txt"
+        if not mqc_stats.exists():
+            mqc_stats = next(qc_dir.glob("**/multiqc_general_stats.txt"), None)  # type: ignore
+
+        if mqc_stats and Path(mqc_stats).exists():
+            import csv
+            with open(mqc_stats) as f:
+                reader = csv.DictReader(f, delimiter="\t")
+                mqc_rows = list(reader)
+            result["multiqc_stats"] = mqc_rows
+            result["multiqc_n_samples"] = len(mqc_rows)
+        else:
+            result["multiqc_stats"] = None
+
+        # 3. STAR logs — extract uniquely mapped %
+        star_logs = list(project_dir.glob("*/rna-seq/final_outputs/*Log.final.out"))
+        star_logs += list(project_dir.glob("logs/star/*.log"))
+        star_summary: List[Dict] = []
+        for log in star_logs[:38]:
+            try:
+                text = Path(log).read_text()
+                uniq_m = re.search(r'Uniquely mapped reads %\s+\|\s+([\d.]+)%', text)
+                multi_m = re.search(r'% of reads mapped to multiple loci\s+\|\s+([\d.]+)%', text)
+                unmapped_m = re.search(r'% of reads unmapped: too short\s+\|\s+([\d.]+)%', text)
+                sample_name = log.parent.parent.parent.name if 'rna-seq' in str(log) else log.stem
+                star_summary.append({
+                    "sample": sample_name,
+                    "uniquely_mapped_pct": float(uniq_m.group(1)) if uniq_m else None,
+                    "multi_mapped_pct": float(multi_m.group(1)) if multi_m else None,
+                    "unmapped_too_short_pct": float(unmapped_m.group(1)) if unmapped_m else None,
+                })
+            except Exception:
+                pass
+
+        if star_summary:
+            avg_uniq = sum(s["uniquely_mapped_pct"] or 0 for s in star_summary) / len(star_summary)
+            low_mapping = [s for s in star_summary if (s["uniquely_mapped_pct"] or 100) < 70]
+            result["star_alignment"] = {
+                "n_samples": len(star_summary),
+                "avg_uniquely_mapped_pct": round(avg_uniq, 2),
+                "low_mapping_samples": low_mapping,
+                "per_sample": star_summary,
+            }
+        else:
+            result["star_alignment"] = None
+
+        # Overall summary
+        n_pass = n_fail = 0
+        if result["fastqc_evaluation"] and isinstance(result["fastqc_evaluation"], dict):
+            for v in result["fastqc_evaluation"].values():
+                if isinstance(v, dict):
+                    if v.get("overall_pass"):
+                        n_pass += 1
+                    else:
+                        n_fail += 1
+
+        result["summary"] = {
+            "fastqc_pass": n_pass,
+            "fastqc_fail": n_fail,
+            "star_avg_mapping_pct": result["star_alignment"]["avg_uniquely_mapped_pct"] if result["star_alignment"] else None,
+            "multiqc_available": result["multiqc_stats"] is not None,
+        }
+
+        return result
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+def read_counts(
+    config_file: str,
+    genes: Optional[List[str]] = None,
+    top_n: int = 20,
+) -> Dict[str, Any]:
+    """
+    Read the featureCounts expression matrix.
+
+    Args:
+        config_file: Path to project config
+        genes: Specific gene IDs or names to look up (optional)
+        top_n: Return top N most variable genes if genes not specified
+
+    Answers: "CHD8 발현량 보여줘", "가장 많이 발현된 유전자 20개", "counts matrix 어디에 있어?"
+    """
+    try:
+        cfg_path = Path(config_file)
+        if not cfg_path.exists():
+            return {"status": "error", "message": f"Config not found: {config_file}"}
+
+        with open(cfg_path) as f:
+            cfg = yaml.safe_load(f)
+
+        base = Path(cfg.get("base_results_dir") or cfg.get("results_dir", "results"))
+        project_id = cfg.get("project_id", "")
+        project_dir = base / project_id if (base / project_id).exists() else base
+        counts_dir = project_dir / "project_summary" / "counts"
+
+        # Find counts matrix
+        candidates = (
+            list(counts_dir.glob("*.txt"))
+            + list(counts_dir.glob("*.tsv"))
+            + list(counts_dir.glob("*.csv"))
+        )
+        if not candidates:
+            return {
+                "status": "not_found",
+                "message": f"No counts files found in {counts_dir}",
+                "counts_dir": str(counts_dir),
+            }
+
+        counts_file = candidates[0]
+        import csv
+
+        # Detect delimiter
+        sep = "\t" if counts_file.suffix in (".txt", ".tsv") else ","
+
+        with open(counts_file) as f:
+            reader = csv.DictReader(f, delimiter=sep)
+            rows = list(reader)
+
+        if not rows:
+            return {"status": "error", "message": "Counts file is empty"}
+
+        cols = list(rows[0].keys())
+        # First column is typically gene_id; rest are sample counts
+        gene_col = cols[0]
+        sample_cols = cols[1:]
+
+        # Filter to requested genes
+        if genes:
+            matched = [r for r in rows if any(
+                g.lower() in r[gene_col].lower() for g in genes
+            )]
+            return {
+                "status": "success",
+                "counts_file": str(counts_file),
+                "n_genes_total": len(rows),
+                "genes_queried": genes,
+                "results": matched,
+                "samples": sample_cols,
+            }
+
+        # Return top N most variable genes
+        def variance(row: Dict) -> float:
+            vals = []
+            for s in sample_cols:
+                try:
+                    vals.append(float(row[s]))
+                except (ValueError, KeyError):
+                    pass
+            if len(vals) < 2:
+                return 0.0
+            mean = sum(vals) / len(vals)
+            return sum((v - mean) ** 2 for v in vals) / len(vals)
+
+        top_rows = sorted(rows, key=variance, reverse=True)[:top_n]
+
+        return {
+            "status": "success",
+            "counts_file": str(counts_file),
+            "n_genes_total": len(rows),
+            "n_samples": len(sample_cols),
+            "samples": sample_cols,
+            "top_variable_genes": top_rows,
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+def read_pipeline_logs(
+    config_file: str,
+    rule: Optional[str] = None,
+    sample_id: Optional[str] = None,
+    tail_lines: int = 50,
+) -> Dict[str, Any]:
+    """
+    Read pipeline execution logs.
+
+    Args:
+        config_file: Path to project config
+        rule: Specific rule to read logs for (cutadapt/star/fastqc/featurecounts)
+        sample_id: Specific sample to read logs for
+        tail_lines: Number of tail lines to return per log
+
+    Answers: "로그 보여줘", "Chd8_HPC_1F_W 샘플 STAR 로그 어때?", "에러 있어?"
+    """
+    try:
+        cfg_path = Path(config_file)
+        if not cfg_path.exists():
+            return {"status": "error", "message": f"Config not found: {config_file}"}
+
+        with open(cfg_path) as f:
+            cfg = yaml.safe_load(f)
+
+        base = Path(cfg.get("base_results_dir") or cfg.get("results_dir", "results"))
+        project_id = cfg.get("project_id", "")
+        project_dir = base / project_id if (base / project_id).exists() else base
+        logs_dir = project_dir / "logs"
+
+        if not logs_dir.exists():
+            # Also try config-specified logs_dir
+            logs_dir = Path(cfg.get("logs_dir", str(project_dir / "logs")))
+
+        if not logs_dir.exists():
+            return {"status": "not_found", "message": f"Logs directory not found: {logs_dir}"}
+
+        # Find matching log files
+        if rule and sample_id:
+            pattern = f"{rule}/{sample_id}*.log"
+        elif rule:
+            pattern = f"{rule}/*.log"
+        elif sample_id:
+            pattern = f"**/{sample_id}*.log"
+        else:
+            pattern = "**/*.log"
+
+        log_files = list(logs_dir.glob(pattern))[:20]
+
+        if not log_files:
+            return {
+                "status": "not_found",
+                "message": f"No logs found matching rule={rule}, sample={sample_id}",
+                "logs_dir": str(logs_dir),
+                "available_rules": [p.name for p in logs_dir.iterdir() if p.is_dir()],
+            }
+
+        logs_out = []
+        errors_found = []
+        for lf in sorted(log_files):
+            try:
+                text = lf.read_text(errors="ignore")
+                lines = text.splitlines()
+                tail = "\n".join(lines[-tail_lines:])
+                has_error = any(
+                    kw in text.lower()
+                    for kw in ("error", "exception", "failed", "killed", "oom")
+                )
+                if has_error:
+                    errors_found.append(str(lf.relative_to(logs_dir)))
+                logs_out.append({
+                    "file": str(lf.relative_to(logs_dir)),
+                    "lines_total": len(lines),
+                    "has_error": has_error,
+                    "tail": tail,
+                })
+            except Exception:
+                pass
+
+        return {
+            "status": "success",
+            "n_logs": len(logs_out),
+            "errors_found": errors_found,
+            "logs": logs_out,
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
