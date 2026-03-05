@@ -524,6 +524,30 @@ class PipelineAgent:
         
         return arguments
 
+    def _trim_tool_result_for_llm(self, result: Dict) -> Dict:
+        """
+        Return a compact version of a tool result for the LLM message.
+        Removes large per-sample arrays (per_sample, multiqc_stats,
+        fastqc_evaluation) that can overflow the context window, keeping
+        only summary-level statistics that the LLM needs to answer the user.
+        """
+        trimmed = {}
+        for k, v in result.items():
+            if k == "star_alignment" and isinstance(v, dict):
+                # Keep summary stats; drop per_sample list
+                trimmed[k] = {ek: ev for ek, ev in v.items() if ek != "per_sample"}
+                low = v.get("low_mapping_samples", [])
+                trimmed[k]["low_mapping_samples"] = low[:5]  # show at most 5
+            elif k in ("multiqc_stats", "fastqc_evaluation"):
+                # Replace with a count so the LLM knows data is present
+                if isinstance(v, (list, dict)):
+                    trimmed[k + "_count"] = len(v)
+                else:
+                    trimmed[k] = v
+            else:
+                trimmed[k] = v
+        return trimmed
+
     def _execute_tool(self, tool_name: str, arguments: Dict) -> Any:
         """Execute a tool and return results."""
         
@@ -1196,12 +1220,18 @@ CRITICAL RULE: "실행해줘", "돌려줘", "시작해줘", "run", "execute", "s
                     results.append({"tool": name, "result": tool_result})
 
                     # If tool was unknown, include a correction hint
-                    tool_content = json.dumps(tool_result, ensure_ascii=False)
                     if "error" in tool_result and "Unknown tool" in str(tool_result.get("error", "")):
                         tool_content = json.dumps({
                             "error": tool_result["error"],
                             "hint": "Use one of the available tools listed above."
                         }, ensure_ascii=False)
+                    else:
+                        # Strip large arrays before sending to LLM to avoid context overflow.
+                        # Keep only summary-level fields; per-sample lists can be thousands of tokens.
+                        tool_content = json.dumps(
+                            self._trim_tool_result_for_llm(tool_result),
+                            ensure_ascii=False
+                        )
 
                     # Append tool turn to conversation
                     messages.append({"role": "assistant", "content": None,
