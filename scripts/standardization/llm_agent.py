@@ -335,13 +335,13 @@ class PipelineAgent:
             },
             {
                 "name": "run_pipeline",
-                "description": "Execute RNA-seq pipeline with Snakemake",
+                "description": "Execute RNA-seq pipeline with Snakemake. Use dry_run=false to ACTUALLY RUN the pipeline. Use dry_run=true only for preview. When user says '실행해줘', '돌려줘', '시작해줘', 'run', 'execute', 'start' → set dry_run=false.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "config_file": {"type": "string", "description": "Path to config.yaml"},
-                        "cores": {"type": "integer", "description": "Number of cores", "default": 8},
-                        "dry_run": {"type": "boolean", "description": "Show what would run without executing", "default": True}
+                        "cores": {"type": "integer", "description": "Number of cores (e.g. 16)", "default": 8},
+                        "dry_run": {"type": "boolean", "description": "false=actually run pipeline, true=preview only. Default false when user says run/execute/start.", "default": False}
                     },
                     "required": ["config_file"]
                 }
@@ -769,7 +769,15 @@ Examples (Multi-axis Analysis):
 
 Examples (Pipeline Execution):
 - User: "/data/raw/ 폴더에서 FASTQ 파일 찾아줘" → TOOL_CALL: {{"name": "detect_fastq_files", "parameters": {{"data_dir": "/data/raw"}}}}
-- User: "파이프라인 dry-run 해줘" → TOOL_CALL: {{"name": "run_pipeline", "parameters": {{"config_file": "config/projects/test-2026.yaml", "dry_run": true}}}}
+- User: "파이프라인 dry-run 해줘" → TOOL_CALL: {{"name": "run_pipeline", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml", "dry_run": true, "cores": 8}}}}
+- User: "16 cores로 실행해줘" → TOOL_CALL: {{"name": "run_pipeline", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml", "dry_run": false, "cores": 16}}}}
+- User: "파이프라인 시작해줘" → TOOL_CALL: {{"name": "run_pipeline", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml", "dry_run": false, "cores": 8}}}}
+- User: "8코어로 돌려줘" → TOOL_CALL: {{"name": "run_pipeline", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml", "dry_run": false, "cores": 8}}}}
+- User: "리소스 확인해줘" → TOOL_CALL: {{"name": "estimate_resources", "parameters": {{"config_file": "config/projects/config_mouse_chd8_local.yaml", "cores": 8}}}}
+
+CRITICAL RULE: "실행해줘", "돌려줘", "시작해줘", "run", "execute", "start pipeline" → ALWAYS use run_pipeline with dry_run=false.
+"dry-run", "미리보기", "확인해줘" → run_pipeline with dry_run=true.
+"리소스", "resource", "얼마나 걸려" → estimate_resources (NOT run_pipeline).
 """
         return base + examples
 
