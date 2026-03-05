@@ -1191,23 +1191,37 @@ def read_qc_results(config_file: str) -> Dict[str, Any]:
         base = Path(cfg.get("base_results_dir") or cfg.get("results_dir", "results"))
         project_id = cfg.get("project_id", "")
         project_dir = base / project_id if (base / project_id).exists() else base
-        qc_dir = project_dir / "project_summary" / "qc"
+        summary_dir = project_dir / "project_summary"
 
         result: Dict[str, Any] = {"status": "success", "project_dir": str(project_dir)}
 
-        # 1. FastQC evaluation JSON
-        eval_json = qc_dir / "fastqc_evaluation.json"
-        if eval_json.exists():
-            with open(eval_json) as f:
-                eval_data = json.load(f)
-            result["fastqc_evaluation"] = eval_data
+        # 1. FastQC evaluation — parse multiqc_fastqc.txt (fastqc_evaluation.json is not generated)
+        mqc_fastqc = summary_dir / "multiqc_report_data" / "multiqc_fastqc.txt"
+        if not mqc_fastqc.exists():
+            mqc_fastqc = next(summary_dir.glob("**/multiqc_fastqc.txt"), None)  # type: ignore
+        if mqc_fastqc and Path(mqc_fastqc).exists():
+            import csv
+            with open(mqc_fastqc) as f:
+                reader = csv.DictReader(f, delimiter="\t")
+                fastqc_rows = list(reader)
+            skip_cols = {"Sample", "Filename", "File type", "Encoding",
+                         "Total Sequences", "Total Bases", "Sequences flagged as poor quality",
+                         "Sequence length", "%GC", "total_deduplicated_percentage",
+                         "avg_sequence_length", "median_sequence_length"}
+            fastqc_eval = {}
+            for row in fastqc_rows:
+                sample = row.get("Sample", "")
+                checks = {k: v for k, v in row.items() if k not in skip_cols}
+                overall_pass = all(v in ("pass", "warn", "") for v in checks.values())
+                fastqc_eval[sample] = {"overall_pass": overall_pass, "checks": checks}
+            result["fastqc_evaluation"] = fastqc_eval
         else:
             result["fastqc_evaluation"] = None
 
         # 2. MultiQC general stats TSV
-        mqc_stats = qc_dir / "multiqc_data" / "multiqc_general_stats.txt"
+        mqc_stats = summary_dir / "multiqc_report_data" / "multiqc_general_stats.txt"
         if not mqc_stats.exists():
-            mqc_stats = next(qc_dir.glob("**/multiqc_general_stats.txt"), None)  # type: ignore
+            mqc_stats = next(summary_dir.glob("**/multiqc_general_stats.txt"), None)  # type: ignore
 
         if mqc_stats and Path(mqc_stats).exists():
             import csv
@@ -1220,8 +1234,11 @@ def read_qc_results(config_file: str) -> Dict[str, Any]:
             result["multiqc_stats"] = None
 
         # 3. STAR logs — extract uniquely mapped %
-        star_logs = list(project_dir.glob("*/rna-seq/final_outputs/*Log.final.out"))
-        star_logs += list(project_dir.glob("logs/star/*.log"))
+        star_logs = list(project_dir.glob("intermediate/aligned/*/Log.final.out"))
+        if not star_logs:
+            star_logs = list(project_dir.glob("*/rna-seq/final_outputs/*Log.final.out"))
+        if not star_logs:
+            star_logs = list(project_dir.glob("logs/star/*.log"))
         star_summary: List[Dict] = []
         for log in star_logs[:38]:
             try:
@@ -1229,7 +1246,12 @@ def read_qc_results(config_file: str) -> Dict[str, Any]:
                 uniq_m = re.search(r'Uniquely mapped reads %\s+\|\s+([\d.]+)%', text)
                 multi_m = re.search(r'% of reads mapped to multiple loci\s+\|\s+([\d.]+)%', text)
                 unmapped_m = re.search(r'% of reads unmapped: too short\s+\|\s+([\d.]+)%', text)
-                sample_name = log.parent.parent.parent.name if 'rna-seq' in str(log) else log.stem
+                if "intermediate/aligned" in str(log):
+                    sample_name = log.parent.name
+                elif 'rna-seq' in str(log):
+                    sample_name = log.parent.parent.parent.name
+                else:
+                    sample_name = log.stem
                 star_summary.append({
                     "sample": sample_name,
                     "uniquely_mapped_pct": float(uniq_m.group(1)) if uniq_m else None,
