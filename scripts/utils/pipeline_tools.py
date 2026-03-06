@@ -678,37 +678,147 @@ def run_pipeline(
 # Phase 8B tools
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _parse_snakemake_log(log_path: Path) -> Dict[str, Any]:
+    """
+    Parse a Snakemake log file (from background run or .snakemake/log/).
+
+    Key patterns:
+      - "X of Y steps (Z%) done"  → progress
+      - "rule NAME:" / "localrule NAME:"  → active rules
+      - "Finished job N."  → completed jobs counter
+      - "Error in rule NAME:"  → rule-level errors
+      - "Exiting because a job execution failed"  → fatal error
+      - "Complete log:"  → pipeline finished successfully
+    """
+    try:
+        text = log_path.read_text(errors='ignore')
+    except OSError:
+        return {}
+
+    # Latest progress: "X of Y steps (Z%) done"
+    progress_matches = re.findall(r'(\d+) of (\d+) steps \([\d.]+%\) done', text)
+    jobs_done = jobs_total = progress_pct = None
+    if progress_matches:
+        done_s, total_s = progress_matches[-1]
+        jobs_done = int(done_s)
+        jobs_total = int(total_s)
+        progress_pct = round(jobs_done / jobs_total * 100, 1) if jobs_total else 0.0
+
+    # Rules seen (last one = currently running or most recently finished)
+    rule_names = re.findall(r'(?:^|\n)(?:local)?rule (\w+):\n', text)
+    current_rule = rule_names[-1] if rule_names else None
+
+    # Rules with at least one completion (rule name precedes "Finished job N.")
+    # Build mapping: segment between consecutive rule mentions
+    finished_count = len(re.findall(r'Finished job \d+\.', text))
+
+    # Error detection
+    error_rules = re.findall(r'Error in rule (\w+):', text)
+    fatal_error = 'Exiting because a job execution failed' in text
+
+    # Completion signal
+    is_complete = (
+        'Complete log:' in text
+        or bool(re.search(r'\d+ of \d+ steps \(100%\) done', text))
+    )
+
+    log_size_kb = round(log_path.stat().st_size / 1024, 1)
+
+    return {
+        "progress_pct": progress_pct,
+        "jobs_done": jobs_done,
+        "jobs_total": jobs_total,
+        "finished_count": finished_count,
+        "current_rule": current_rule,
+        "error_rules": error_rules,
+        "fatal_error": fatal_error,
+        "is_complete": is_complete,
+        "log_file": str(log_path),
+        "log_size_kb": log_size_kb,
+    }
+
+
+def _parse_star_final_log(log_path: Path) -> Dict[str, Any]:
+    """
+    Parse STAR Log.final.out and return key mapping metrics.
+    Format: "   Label | <TAB> value"
+    """
+    try:
+        text = log_path.read_text(errors='ignore')
+    except OSError:
+        return {}
+
+    def _extract(label: str) -> Optional[str]:
+        m = re.search(rf'{re.escape(label)}\s*\|\s*(\S+)', text)
+        return m.group(1) if m else None
+
+    uniquely_pct = _extract('Uniquely mapped reads %')
+    multi_pct    = _extract('% of reads mapped to multiple loci')
+    unmapped_pct = _extract('% of reads unmapped: too short')
+    total_reads  = _extract('Number of input reads')
+
+    return {
+        "uniquely_mapped_pct": uniquely_pct,
+        "multi_mapped_pct": multi_pct,
+        "unmapped_too_short_pct": unmapped_pct,
+        "total_reads": int(total_reads) if total_reads and total_reads.isdigit() else total_reads,
+    }
+
+
+def _find_snakemake_log(config_file: Optional[str], pipeline_root: Optional[Path]) -> Optional[Path]:
+    """
+    Find the most recent/relevant Snakemake log:
+    1. Background log written by run_pipeline(background=True):
+       <pipeline_root>/logs/snakemake_<config_stem>.log
+    2. Latest file in <pipeline_root>/.snakemake/log/
+    """
+    if config_file and pipeline_root:
+        bg_log = pipeline_root / "logs" / f"snakemake_{Path(config_file).stem}.log"
+        if bg_log.exists() and bg_log.stat().st_size > 0:
+            return bg_log
+
+    if pipeline_root:
+        smk_log_dir = pipeline_root / ".snakemake" / "log"
+        if smk_log_dir.exists():
+            logs = sorted(smk_log_dir.glob("*.snakemake.log"), key=lambda p: p.stat().st_mtime)
+            if logs:
+                return logs[-1]  # most recent
+
+    return None
+
+
 def monitor_pipeline(
     project_id: str,
     base_results_dir: str,
     config_file: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Check pipeline execution status by inspecting completed output files and logs.
+    Check pipeline execution status by parsing Snakemake/STAR logs and
+    inspecting output files.
 
-    Strategy (no live Snakemake process needed):
-    1. Load config to determine expected rules / sample count.
-    2. Count output files that exist vs expected per rule.
-    3. Classify status: not_started / running / completed / error.
+    Priority:
+    1. Snakemake log (background log or .snakemake/log/) → exact progress %
+    2. STAR Log.final.out per sample → per-sample mapping rates
+    3. Output file counting → fallback when no log available
 
     Returns:
         {
             "status": "not_started"|"running"|"completed"|"error",
             "progress_pct": float,
+            "current_stage": str,
             "completed_rules": {rule: n_done},
             "total_rules": {rule: n_expected},
-            "current_stage": str,
-            "errors": [...]
+            "n_samples": int,
+            "snakemake_log": {...},   # present when log found
+            "star_per_sample": {...}, # per-sample mapping stats
+            "project_dir": str,
         }
     """
     try:
         base_path = Path(base_results_dir)
         project_dir = base_path / project_id
 
-        # Path overlap fallback: if user passed the full project path as base_results_dir
-        # (e.g. base=/data_3tb/output/mouse-chd8/ and project_id=mouse-chd8),
-        # project_dir becomes .../mouse-chd8/mouse-chd8 which doesn't exist.
-        # In that case, check if base_path itself contains sample-like subdirs and use it directly.
+        # Path overlap fallback: user passed full project path as base_results_dir
         if not project_dir.exists() and base_path.exists():
             candidate_dirs = [
                 p for p in base_path.iterdir()
@@ -719,111 +829,135 @@ def monitor_pipeline(
             if candidate_dirs:
                 project_dir = base_path
 
-        # Try to get sample count from config
-        n_samples = 0
+        # Locate pipeline root (walk up from config_file until Snakefile found)
+        pipeline_root: Optional[Path] = None
         if config_file and Path(config_file).exists():
+            root = Path(config_file).resolve().parent
+            for _ in range(6):
+                if (root / "Snakefile").exists():
+                    pipeline_root = root
+                    break
+                root = root.parent
+
+        # ── 1. Snakemake log parsing ──────────────────────────────────────────
+        smk_log_path = _find_snakemake_log(config_file, pipeline_root)
+        smk = _parse_snakemake_log(smk_log_path) if smk_log_path else {}
+
+        # ── 2. STAR Log.final.out parsing ─────────────────────────────────────
+        star_logs = sorted(project_dir.glob("intermediate/aligned/*/Log.final.out")) \
+            if project_dir.exists() else []
+        star_per_sample: Dict[str, Any] = {}
+        for sl in star_logs:
+            sample_id = sl.parent.name
+            star_per_sample[sample_id] = _parse_star_final_log(sl)
+
+        # ── 3. File-based counts (fallback + supplement) ───────────────────────
+        # Sample count: from STAR logs first, then config, then dir listing
+        n_samples = len(star_logs)
+        if n_samples == 0 and config_file and Path(config_file).exists():
             with open(config_file) as f:
                 cfg = yaml.safe_load(f)
             data_dir = cfg.get('data_dir', '')
             if data_dir:
                 fq = detect_fastq_files(data_dir)
-                if fq['status'] == 'success':
+                if fq.get('status') == 'success':
                     n_samples = fq['total_samples']
+        if n_samples == 0 and project_dir.exists():
+            n_samples = sum(
+                1 for p in project_dir.iterdir()
+                if p.is_dir() and not p.name.startswith('.')
+                and p.name not in ('logs', 'project_summary')
+            )
 
-        if n_samples == 0:
-            # Fallback: count sample dirs
-            if project_dir.exists():
-                n_samples = sum(
-                    1 for p in project_dir.iterdir()
-                    if p.is_dir() and not p.name.startswith('.')
-                    and p.name not in ('logs', 'project_summary')
-                )
+        if n_samples == 0 and not smk:
+            return {"status": "not_started",
+                    "message": f"No pipeline output found under: {project_dir}"}
 
-        if n_samples == 0:
-            return {"status": "not_started", "message": f"Project directory not found: {project_dir}"}
-
-        # Rules and their expected output counts
         expected = {
-            'cutadapt':          n_samples,   # trimmed fastq logs
-            'fastqc_raw':        n_samples * 2,
-            'star_align':        n_samples,
+            'cutadapt':            n_samples,
+            'fastqc_raw':          n_samples * 2,
+            'star_align':          n_samples,
             'featurecounts_quant': 1,
-            'multiqc':           1,
-            'generate_manifest': n_samples,
+            'multiqc':             1,
+            'generate_manifest':   n_samples,
         }
 
-        completed: Dict[str, int] = {}
-
-        # Count per-rule outputs via manifest files (most reliable indicator)
-        manifests = list(project_dir.glob('*/rna-seq/final_outputs/manifest.json'))
-        completed['generate_manifest'] = len(manifests)
-
-        # Count BAM files as proxy for star_align
-        bams = list(project_dir.glob('*/rna-seq/final_outputs/*.bam'))
-        completed['star_align'] = len(bams)
-
-        # Count trimmed log files as proxy for cutadapt
+        # Count output files
         logs_dir = project_dir / 'logs'
-        cutadapt_logs = list(logs_dir.glob('cutadapt/*.log')) if logs_dir.exists() else []
-        completed['cutadapt'] = len(cutadapt_logs)
+        completed: Dict[str, int] = {}
+        completed['star_align']          = len(star_logs)  # most reliable
+        completed['generate_manifest']   = len(list(project_dir.glob('*/rna-seq/final_outputs/manifest.json')))
+        completed['cutadapt']            = len(list(logs_dir.glob('cutadapt/*.log'))) if logs_dir.exists() else 0
+        fqc = list(project_dir.glob('*/rna-seq/final_outputs/qc/*_fastqc.zip'))
+        fqc += list((project_dir / 'project_summary' / 'qc').glob('*_fastqc.zip'))
+        completed['fastqc_raw']          = len(set(str(f) for f in fqc))
+        completed['multiqc']             = len(list(project_dir.glob('project_summary/qc/multiqc_report.html')))
+        completed['featurecounts_quant'] = min(len(list(project_dir.glob('project_summary/counts/*.txt'))), 1)
 
-        # Count fastqc zips
-        fastqc_zips = list(project_dir.glob('*/rna-seq/final_outputs/qc/*_fastqc.zip'))
-        # also check project_summary qc dir
-        fastqc_zips += list((project_dir / 'project_summary' / 'qc').glob('*_fastqc.zip'))
-        completed['fastqc_raw'] = len(set(str(f) for f in fastqc_zips))
+        # ── 4. Determine progress and status ──────────────────────────────────
+        # Prefer Snakemake log progress (exact), fallback to file counting
+        if smk.get('progress_pct') is not None:
+            progress = smk['progress_pct']
+        else:
+            total_exp  = sum(expected.values())
+            total_done = sum(min(completed.get(r, 0), expected[r]) for r in expected)
+            progress   = round(total_done / total_exp * 100, 1) if total_exp > 0 else 0.0
 
-        # MultiQC report
-        mqc = list(project_dir.glob('project_summary/qc/multiqc_report.html'))
-        completed['multiqc'] = len(mqc)
-
-        # featureCounts
-        counts = list(project_dir.glob('project_summary/counts/*.txt'))
-        completed['featurecounts_quant'] = min(len(counts), 1)
-
-        # Compute overall progress
-        total_exp = sum(expected.values())
-        total_done = sum(min(completed.get(r, 0), expected[r]) for r in expected)
-        progress = round(total_done / total_exp * 100, 1) if total_exp > 0 else 0.0
-
-        # Determine current stage (last rule with partial completion)
+        # Current stage: most advanced rule with at least one output
         pipeline_order = ['cutadapt', 'fastqc_raw', 'star_align',
                           'featurecounts_quant', 'generate_manifest', 'multiqc']
-        current_stage = 'not_started'
+        current_stage = smk.get('current_rule') or 'not_started'
         for rule in pipeline_order:
             if completed.get(rule, 0) > 0:
                 current_stage = rule
-        if completed.get('multiqc', 0) >= 1:
+        if completed.get('multiqc', 0) >= 1 or smk.get('is_complete'):
             current_stage = 'completed'
 
-        # Check for error logs
-        error_logs = []
-        if logs_dir.exists():
-            for log_file in list(logs_dir.rglob('*.log'))[:50]:
-                try:
-                    text = log_file.read_text(errors='ignore')
-                    if 'error' in text.lower() or 'exception' in text.lower():
-                        error_logs.append(str(log_file.relative_to(project_dir)))
-                except Exception:
-                    pass
-
+        # Status classification
+        has_fatal = smk.get('fatal_error', False)
+        is_complete = smk.get('is_complete', False) or progress >= 99.5 or current_stage == 'completed'
         status = (
-            'not_started' if progress == 0
-            else 'completed'  if progress >= 99.0
-            else 'error'      if error_logs
+            'error'       if has_fatal
+            else 'completed' if is_complete
+            else 'not_started' if progress == 0 and not smk
             else 'running'
         )
 
-        return {
+        # ── 5. STAR summary stats ─────────────────────────────────────────────
+        star_mapping_pcts = []
+        for s in star_per_sample.values():
+            pct_str = s.get('uniquely_mapped_pct', '')
+            if pct_str and pct_str.endswith('%'):
+                try:
+                    star_mapping_pcts.append(float(pct_str.rstrip('%')))
+                except ValueError:
+                    pass
+        star_summary: Dict[str, Any] = {
+            "n_completed": len(star_logs),
+            "n_expected": n_samples,
+        }
+        if star_mapping_pcts:
+            star_summary["avg_uniquely_mapped_pct"] = round(sum(star_mapping_pcts) / len(star_mapping_pcts), 2)
+            star_summary["min_uniquely_mapped_pct"] = round(min(star_mapping_pcts), 2)
+
+        result: Dict[str, Any] = {
             "status": status,
             "progress_pct": progress,
             "current_stage": current_stage,
             "completed_rules": completed,
             "total_rules": expected,
             "n_samples": n_samples,
+            "star_alignment": star_summary,
             "project_dir": str(project_dir),
-            "error_logs": error_logs[:5],
         }
+        if star_per_sample:
+            result["star_per_sample"] = star_per_sample
+        if smk:
+            result["snakemake_log"] = smk
+        if smk.get('error_rules'):
+            result["error_rules"] = smk['error_rules']
+
+        return result
 
     except Exception as e:
         return {"status": "error", "message": f"monitor_pipeline failed: {e}"}
