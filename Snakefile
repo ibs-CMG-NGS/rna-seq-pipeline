@@ -173,12 +173,20 @@ if USE_SAMPLE_SHEET:
             else:
                 return SAMPLE_METADATA[wildcards.sample]['fastq_2']
 
-        # STAR readFilesCommand: zcat for .gz, cat for uncompressed
+        # Detect compression from first sample; warn if mixed formats exist
         _first_r1 = str(SAMPLE_METADATA[SAMPLES[0]].get('fastq_1', '')) if SAMPLES else ''
         IS_GZIP = _first_r1.endswith('.gz')
 
+        _gz_count  = sum(1 for s in SAMPLES if str(SAMPLE_METADATA[s].get('fastq_1', '')).endswith('.gz'))
+        _raw_count = len(SAMPLES) - _gz_count
+        if _gz_count > 0 and _raw_count > 0:
+            print(f"  [WARNING] Mixed FASTQ formats in sample sheet!")
+            print(f"  {_gz_count} sample(s) use .gz, {_raw_count} sample(s) are uncompressed.")
+            print(f"  cutadapt handles both; STAR reads trimmed output (always .gz) — OK.")
+        else:
+            print(f"  Compression: {'gzip (.gz)' if IS_GZIP else 'uncompressed'}")
+
         print(f"  Sample Sheet Mode: Using FASTQ paths from {SAMPLE_SHEET_PATH}")
-        print(f"  Compression: {'gzip (.gz)' if IS_GZIP else 'uncompressed'}")
     else:
         # FASTQ 경로가 없으면 data_dir에서 자동 감지로 폴백
         print(f"  Sample Sheet Mode: FASTQ paths not in sheet, using auto-detection")
@@ -232,6 +240,27 @@ else:
             # 사용된 패턴 저장 + 압축 여부
             DETECTED_PATTERN = pattern.replace("*", "{sample}")
             IS_GZIP = DETECTED_PATTERN.endswith('.gz')
+
+            # 혼재 파일 경고: 선택된 패턴과 반대 압축 형식의 R1 파일이 있으면 알림
+            if IS_GZIP:
+                _other = (
+                    glob.glob(f"{RAW_DATA_DIR}/*_1.fastq") +
+                    glob.glob(f"{RAW_DATA_DIR}/*_R1.fastq") +
+                    glob.glob(f"{RAW_DATA_DIR}/*_1.fq") +
+                    glob.glob(f"{RAW_DATA_DIR}/*_R1.fq")
+                )
+            else:
+                _other = (
+                    glob.glob(f"{RAW_DATA_DIR}/*_1.fastq.gz") +
+                    glob.glob(f"{RAW_DATA_DIR}/*_R1.fastq.gz") +
+                    glob.glob(f"{RAW_DATA_DIR}/*_1.fq.gz") +
+                    glob.glob(f"{RAW_DATA_DIR}/*_R1.fq.gz")
+                )
+            if _other:
+                print(f"  [WARNING] Mixed FASTQ formats in {RAW_DATA_DIR}!")
+                print(f"  Auto-detect picked '{DETECTED_PATTERN}' ({len(SAMPLES)} samples).")
+                print(f"  {len(_other)} file(s) with a different extension will be IGNORED.")
+                print(f"  To include all samples, use: use_sample_sheet: true")
             break
 
     if not SAMPLES:
@@ -411,13 +440,12 @@ rule star_align:
         mem_gb=config.get("star_memory_gb", 35)  # Memory limit per STAR job (GB)
     params:
         out_prefix=lambda wildcards: f"{ALIGNED_DIR}/{wildcards.sample}/",
-        read_files_cmd="zcat" if IS_GZIP else "cat",
     shell:
         """
         STAR --runThreadN {threads} \
              --genomeDir {STAR_INDEX} \
              --readFilesIn {input.r1} {input.r2} \
-             --readFilesCommand {params.read_files_cmd} \
+             --readFilesCommand zcat \
              --outFileNamePrefix {params.out_prefix} \
              --outSAMtype BAM SortedByCoordinate \
              --limitBAMsortRAM {config[star_sort_memory_bytes]} \
