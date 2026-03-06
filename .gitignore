@@ -21,9 +21,12 @@ genome/*
 # Ignore actual sample sheet (keep template only)
 samples.tsv
 
-# Ignore project-specific config files (keep config.yaml template only)
+# Ignore project-specific config files (keep templates only)
 config_*.yaml
 config/projects/config_*.yaml
+config/projects/paths_*.yaml
+config/projects/test-*.yaml
+config/samples/test-*.tsv
 
 # Ignore conda environments created in the project
 .conda/
