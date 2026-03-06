@@ -258,9 +258,16 @@ def detect_fastq_files(
         read_type = "single-end"
         
         for fq in fastq_files:
-            # Try to extract sample name and read number
-            name = fq.stem.replace('.fastq', '').replace('.fq', '').replace('.gz', '')
-            
+            # Strip known double extensions without corrupting sample names
+            # (using Path.stem removes only one suffix, e.g. .gz from .fastq.gz)
+            fname = fq.name
+            for ext in ('.fastq.gz', '.fq.gz', '.fastq', '.fq'):
+                if fname.lower().endswith(ext):
+                    name = fname[:-len(ext)]
+                    break
+            else:
+                name = fq.stem  # fallback: remove only last suffix
+
             # Common patterns for R1/R2
             if re.search(r'[_-]R?[12](?:_001)?$', name):
                 # Paired-end
@@ -1005,7 +1012,10 @@ def create_sample_sheet(
                             cond_map[sid] = cond_name
                             break
         else:
-            # Auto-infer: look for common suffixes like _WT _KO _Ctrl _Treat etc.
+            # Auto-infer: match common suffixes only (endswith, not substring).
+            # Substring matching is intentionally avoided — too many false positives
+            # (e.g. _T_ would match batch_T_rep1, _H would match sample_H_treated).
+            # Users should pass explicit `conditions` for non-standard naming.
             auto_patterns = {
                 'wildtype':      ['_W', '_WT', '_wt', '_wildtype', '_Ctrl', '_ctrl', '_control'],
                 'heterozygous':  ['_H', '_Het', '_het', '_heterozygous', '_KO', '_ko'],
@@ -1016,7 +1026,7 @@ def create_sample_sheet(
                 for cond_name, pats in auto_patterns.items():
                     matched = False
                     for p in pats:
-                        if sid.endswith(p) or f'{p}_' in sid:
+                        if sid.endswith(p):
                             cond_map[sid] = cond_name
                             matched = True
                             break
@@ -1026,6 +1036,21 @@ def create_sample_sheet(
         # Build TSV rows
         tsv_path = output_path or f"config/samples/{project_id}.tsv"
         Path(tsv_path).parent.mkdir(parents=True, exist_ok=True)
+
+        # Auto-assign replicate numbers: within each condition, rank by sample_id
+        cond_counter: Dict[str, int] = {}
+        rep_map: Dict[str, str] = {}
+        for sample in sorted(samples, key=lambda s: s['sample_id']):
+            sid = sample['sample_id']
+            cond = cond_map.get(sid, 'unknown')
+            cond_counter[cond] = cond_counter.get(cond, 0) + 1
+            rep_map[sid] = str(cond_counter[cond])
+
+        # Check for missing R2 in paired-end data
+        missing_r2 = [
+            s['sample_id'] for s in samples
+            if 'R2' not in s and fq_result.get('read_type') == 'paired-end'
+        ]
 
         rows = []
         unassigned = []
@@ -1037,7 +1062,7 @@ def create_sample_sheet(
             rows.append({
                 'sample_id': sid,
                 'condition': cond,
-                'replicate': '',
+                'replicate': rep_map.get(sid, ''),
                 'fastq_r1': sample.get('R1', ''),
                 'fastq_r2': sample.get('R2', ''),
             })
@@ -1054,15 +1079,29 @@ def create_sample_sheet(
         for cond in cond_map.values():
             conditions_assigned[cond] = conditions_assigned.get(cond, 0) + 1
 
+        warnings = []
+        if unassigned:
+            warnings.append(
+                f"{len(unassigned)} samples unassigned — pass conditions={{...}} to assign them."
+            )
+        if missing_r2:
+            warnings.append(
+                f"Missing R2 for {len(missing_r2)} sample(s): {missing_r2[:5]}"
+                + (" ..." if len(missing_r2) > 5 else "")
+                + " — check FASTQ files or set read_type: single-end."
+            )
+
         return {
             "status": "success",
             "tsv_path": tsv_path,
             "n_samples": len(rows),
             "conditions_assigned": conditions_assigned,
             "unassigned": unassigned,
+            "missing_r2": missing_r2,
+            "warnings": warnings,
             "message": (
                 f"Sample sheet created: {tsv_path}. "
-                + (f"{len(unassigned)} samples unassigned — specify conditions manually." if unassigned else "All samples assigned.")
+                + (" ".join(warnings) if warnings else "All samples assigned.")
             ),
         }
 
