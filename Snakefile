@@ -119,6 +119,7 @@ else:
 # 2. FASTQ 파일 자동 감지 (use_sample_sheet: false, 기본값)
 
 USE_SAMPLE_SHEET = config.get("use_sample_sheet", False)
+IS_GZIP = True  # default; overridden below once FASTQ format is detected
 SAMPLE_SHEET_PATH = config.get("sample_sheet", "config/samples/master.csv")
 SAMPLE_METADATA = {}  # 샘플 메타데이터 딕셔너리
 
@@ -162,17 +163,22 @@ if USE_SAMPLE_SHEET:
         # 샘플 시트의 FASTQ 경로를 사용하는 헬퍼 함수
         def get_raw_fastq_r1(wildcards):
             return SAMPLE_METADATA[wildcards.sample]['fastq_1']
-        
+
         def get_raw_fastq_r2(wildcards):
             return SAMPLE_METADATA[wildcards.sample]['fastq_2']
-        
+
         def get_raw_fastq_by_read(wildcards):
             if wildcards.read == "1":
                 return SAMPLE_METADATA[wildcards.sample]['fastq_1']
             else:
                 return SAMPLE_METADATA[wildcards.sample]['fastq_2']
-        
+
+        # STAR readFilesCommand: zcat for .gz, cat for uncompressed
+        _first_r1 = str(SAMPLE_METADATA[SAMPLES[0]].get('fastq_1', '')) if SAMPLES else ''
+        IS_GZIP = _first_r1.endswith('.gz')
+
         print(f"  Sample Sheet Mode: Using FASTQ paths from {SAMPLE_SHEET_PATH}")
+        print(f"  Compression: {'gzip (.gz)' if IS_GZIP else 'uncompressed'}")
     else:
         # FASTQ 경로가 없으면 data_dir에서 자동 감지로 폴백
         print(f"  Sample Sheet Mode: FASTQ paths not in sheet, using auto-detection")
@@ -182,12 +188,18 @@ else:
     # 방식 2: FASTQ 파일 자동 감지 (기존 방식)
     SAMPLES = []
     FASTQ_PATTERNS = [
-        "*_1.fastq.gz",      # sample_1.fastq.gz (기본)
+        # gzip 압축 (우선 탐색)
+        "*_1.fastq.gz",      # sample_1.fastq.gz
         "*_R1.fastq.gz",     # sample_R1.fastq.gz
         "*_R1_001.fastq.gz", # sample_R1_001.fastq.gz (Illumina)
         "*.1.fastq.gz",      # sample.1.fastq.gz
         "*_1.fq.gz",         # sample_1.fq.gz
         "*_R1.fq.gz",        # sample_R1.fq.gz
+        # 비압축 (gzip 없으면 탐색)
+        "*_1.fastq",         # sample_1.fastq
+        "*_R1.fastq",        # sample_R1.fastq
+        "*_1.fq",            # sample_1.fq
+        "*_R1.fq",           # sample_R1.fq
     ]
 
     import glob
@@ -208,9 +220,18 @@ else:
                 SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}_1.fq.gz")
             elif "_R1.fq.gz" in pattern:
                 SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}_R1.fq.gz")
-            
-            # 사용된 패턴 저장
+            elif "_1.fastq" in pattern:
+                SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}_1.fastq")
+            elif "_R1.fastq" in pattern:
+                SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}_R1.fastq")
+            elif "_1.fq" in pattern:
+                SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}_1.fq")
+            elif "_R1.fq" in pattern:
+                SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}_R1.fq")
+
+            # 사용된 패턴 저장 + 압축 여부
             DETECTED_PATTERN = pattern.replace("*", "{sample}")
+            IS_GZIP = DETECTED_PATTERN.endswith('.gz')
             break
 
     if not SAMPLES:
@@ -220,7 +241,7 @@ else:
             f"Please check:\n"
             f"  1. data_dir path in config file\n"
             f"  2. FASTQ file naming convention\n"
-            f"  3. File extensions (.fastq.gz or .fq.gz)\n"
+            f"  3. File extensions (.fastq.gz, .fq.gz, .fastq, or .fq)\n"
             f"  OR use sample sheet: set use_sample_sheet: true in config"
         )
 
@@ -389,13 +410,14 @@ rule star_align:
     resources:
         mem_gb=config.get("star_memory_gb", 35)  # Memory limit per STAR job (GB)
     params:
-        out_prefix=lambda wildcards: f"{ALIGNED_DIR}/{wildcards.sample}/"
+        out_prefix=lambda wildcards: f"{ALIGNED_DIR}/{wildcards.sample}/",
+        read_files_cmd="zcat" if IS_GZIP else "cat",
     shell:
         """
         STAR --runThreadN {threads} \
              --genomeDir {STAR_INDEX} \
              --readFilesIn {input.r1} {input.r2} \
-             --readFilesCommand zcat \
+             --readFilesCommand {params.read_files_cmd} \
              --outFileNamePrefix {params.out_prefix} \
              --outSAMtype BAM SortedByCoordinate \
              --limitBAMsortRAM {config[star_sort_memory_bytes]} \
