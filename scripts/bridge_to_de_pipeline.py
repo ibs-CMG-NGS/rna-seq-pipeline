@@ -38,18 +38,20 @@ def load_path_config(config_path: Path) -> dict:
 
 class PipelineBridge:
     """Connect RNA-seq preprocessing to DE/GO analysis."""
-    
-    def __init__(self, 
+
+    def __init__(self,
                  rnaseq_output_dir: Path,
                  de_pipeline_dir: Path,
                  project_id: str,
                  config: dict = None,
-                 assume_yes: bool = False):
+                 assume_yes: bool = False,
+                 exclude_samples: list = None):
         self.rnaseq_output = Path(rnaseq_output_dir)
         self.de_pipeline = Path(de_pipeline_dir)
         self.project_id = project_id
         self.config = config or {}
         self.assume_yes = assume_yes
+        self.exclude_samples = [s.strip() for s in (exclude_samples or [])]
         
     def check_rnaseq_completion(self) -> bool:
         """Check if RNA-seq pipeline completed successfully."""
@@ -89,23 +91,32 @@ class PipelineBridge:
         return True
     
     def prepare_de_input(self) -> Path:
-        """Copy counts matrix to DE pipeline input directory."""
-        # Source files
+        """Copy counts matrix to DE pipeline input directory, dropping excluded samples."""
         counts_relpath = self.config.get('counts_relpath', 'project_summary/counts/counts_matrix_clean.csv')
         counts_file = self.rnaseq_output / counts_relpath
-        
-        # Destination
+
         de_data_dir = self.de_pipeline / "data" / "raw"
         de_data_dir.mkdir(parents=True, exist_ok=True)
-        
+
         dest_counts = de_data_dir / f"{self.project_id}_counts.csv"
-        
-        # Copy counts
+
         print(f"\n📋 Copying counts matrix:")
         print(f"  From: {counts_file}")
         print(f"  To: {dest_counts}")
-        shutil.copy(counts_file, dest_counts)
-        
+
+        if self.exclude_samples:
+            df = pd.read_csv(counts_file, index_col=0)
+            missing = [s for s in self.exclude_samples if s not in df.columns]
+            to_drop = [s for s in self.exclude_samples if s in df.columns]
+            if to_drop:
+                df = df.drop(columns=to_drop)
+                print(f"  Excluded samples: {to_drop}")
+            if missing:
+                print(f"  ⚠️  Samples not found in counts (skipped): {missing}")
+            df.to_csv(dest_counts)
+        else:
+            shutil.copy(counts_file, dest_counts)
+
         return dest_counts
     
     def generate_metadata_template(self) -> Path:
@@ -168,9 +179,17 @@ class PipelineBridge:
             if col in df.columns:
                 metadata_cols.append(col)
         
-        # Extract metadata
+        # Extract metadata and drop excluded samples
         metadata_df = df[metadata_cols].copy()
-        
+
+        if self.exclude_samples:
+            before = len(metadata_df)
+            metadata_df = metadata_df[~metadata_df['sample_id'].isin(self.exclude_samples)]
+            dropped = before - len(metadata_df)
+            if dropped:
+                print(f"  Excluded {dropped} sample(s) from metadata: "
+                      f"{[s for s in self.exclude_samples if s in df['sample_id'].values]}")
+
         # Save metadata
         de_data_dir = self.de_pipeline / "data" / "raw"
         metadata_path = de_data_dir / f"{self.project_id}_metadata.csv"
@@ -326,6 +345,8 @@ class PipelineBridge:
         print(f"{'='*60}")
         print(f"RNA-seq → DE/GO Pipeline Bridge")
         print(f"Project: {self.project_id}")
+        if self.exclude_samples:
+            print(f"Excluded samples: {', '.join(self.exclude_samples)}")
         print(f"{'='*60}")
         
         # Step 1: Check RNA-seq completion
@@ -415,8 +436,9 @@ Examples:
     )
     parser.add_argument(
         '--project-id',
-        required=True,
-        help='Project identifier'
+        required=False,
+        default=None,
+        help='Project identifier (auto-parsed from --config if not provided)'
     )
     parser.add_argument(
         '--dry-run',
@@ -433,9 +455,26 @@ Examples:
         action='store_true',
         help='Assume yes to all prompts (non-interactive mode)'
     )
-    
+    parser.add_argument(
+        '--exclude-samples',
+        nargs='+',
+        metavar='SAMPLE_ID',
+        default=[],
+        help='Sample IDs to exclude from counts matrix and metadata (e.g. --exclude-samples MonTg1_S17 MonTg5_S20)'
+    )
+
     args = parser.parse_args()
-    
+
+    # Load config early to resolve project_id if not given via CLI
+    if args.config and not args.project_id:
+        _early_config = load_path_config(args.config)
+        args.project_id = _early_config.get('project_id')
+        if args.project_id:
+            print(f"📋 project_id from config: {args.project_id}")
+
+    if not args.project_id:
+        parser.error("--project-id is required (or provide it via --config with a project_id field)")
+
     # Auto-generate config if not provided
     if not args.config and AUTO_CONFIG_AVAILABLE:
         print(f"📝 No config provided, attempting auto-generation for {args.project_id}...")
@@ -472,11 +511,26 @@ Examples:
     # Resolve paths with fallback order: CLI > ENV > config > defaults
     rnaseq_output = args.rnaseq_output or \
                     (Path(os.getenv('RNASEQ_OUTPUT')) if os.getenv('RNASEQ_OUTPUT') else None) or \
-                    (Path(config['rnaseq_output']) if 'rnaseq_output' in config else None)
-    
+                    (Path(config['rnaseq_output']) if 'rnaseq_output' in config else None) or \
+                    (Path(config['results_dir']) if 'results_dir' in config else None) or \
+                    (Path(config['base_results_dir']) if 'base_results_dir' in config else None)
+
     de_pipeline = args.de_pipeline or \
                   (Path(os.getenv('DE_PIPELINE')) if os.getenv('DE_PIPELINE') else None) or \
                   (Path(config['de_pipeline']) if 'de_pipeline' in config else None)
+
+    # Auto-detect de_pipeline if still not resolved (even when --config was given)
+    if not de_pipeline and AUTO_CONFIG_AVAILABLE:
+        de_candidates = [
+            Path("/home/ygkim/ngs-pipeline/RNA-Seq_DE_GO_analysis"),
+            Path("/data_3tb/shared/RNA-Seq_DE_GO_analysis"),
+            Path.home() / "ngs-pipeline" / "RNA-Seq_DE_GO_analysis",
+        ]
+        for candidate in de_candidates:
+            if candidate.exists():
+                de_pipeline = candidate
+                print(f"📂 Auto-detected DE pipeline: {de_pipeline}")
+                break
     
     # Validate required paths
     if not rnaseq_output:
@@ -508,7 +562,8 @@ Examples:
         de_pipeline,
         args.project_id,
         config=config,
-        assume_yes=args.yes
+        assume_yes=args.yes,
+        exclude_samples=args.exclude_samples,
     )
     
     bridge.run(dry_run=args.dry_run, skip_de=args.skip_de)

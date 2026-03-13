@@ -62,14 +62,15 @@ except ImportError:
 class PipelineAgent:
     """Natural language agent for pipeline management."""
     
-    def __init__(self, 
+    def __init__(self,
                  project_summary_path: Path = None,
                  rnaseq_output_dir: Path = None,
                  de_pipeline_dir: Path = None,
                  llm_provider: str = "ollama",
                  api_key: str = None,
                  model: str = None,
-                 ollama_host: str = "http://localhost:11434"):
+                 ollama_host: str = "http://localhost:11434",
+                 initial_config: str = None):
         """
         Initialize agent.
         
@@ -103,7 +104,7 @@ class PipelineAgent:
         # Initialize LLM client
         if llm_provider == "ollama" and HAS_OLLAMA:
             self.llm_client = ollama
-            self.model = model or "qwen2.5:32b"  # Default to Qwen2.5 32B
+            self.model = model or "qwen3:14b"  # Default to Qwen3 14B
             print(f"Using local Ollama model: {self.model}")
             
         elif llm_provider == "llamacpp" and HAS_LLAMACPP:
@@ -131,20 +132,53 @@ class PipelineAgent:
         
         # Define available tools
         self.tools = self._define_tools()
-        
+
         # Conversation history
         self.conversation_history = []
-        
+
         # Session state: remember paths used in this session
         self.current_config: Optional[str] = None
         self.current_de_pipeline_dir: Optional[str] = None
+        self.current_de_config: Optional[str] = None   # DE pipeline config YAML
+        self.current_data_dir: Optional[str] = None
+        self.current_project_id: Optional[str] = None
+        self.current_results_dir: Optional[str] = None
+
+        # Persistent session file — survives agent restarts
+        self.session_file = _project_root / ".agent_session.json"
+        self._load_session()
+
+        # Explicit config overrides session file
+        if initial_config:
+            self.current_config = initial_config
+            self._save_session()
     
     def _define_tools(self) -> List[Dict]:
         """Define available tools for LLM function calling."""
         return [
             {
+                "name": "switch_project",
+                "description": (
+                    "현재 세션의 프로젝트를 초기화하고 새 프로젝트로 전환. "
+                    "기존 config/data_dir/results_dir 등 세션 상태를 모두 지운다. "
+                    "트리거: '새 프로젝트 시작', '다른 프로젝트', '프로젝트 바꿔', '새로 시작', "
+                    "'새 분석 시작', '프로젝트 전환', 'new project', 'switch project'. "
+                    "새 config 경로를 알고 있으면 new_config에 전달하고, 모르면 비워두면 됨."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "new_config": {
+                            "type": "string",
+                            "description": "새 프로젝트 config 경로 (알고 있는 경우). 없으면 생략."
+                        }
+                    },
+                    "required": []
+                }
+            },
+            {
                 "name": "get_project_status",
-                "description": "Get overall project QC status and summary",
+                "description": "파이프라인 완료 후 샘플 QC 결과 요약 (맵핑률, 통과/실패 샘플 수 등). 'QC 상태 보여줘', 'QC 결과 어때?', '몇 개 통과했어?', 'show QC summary' → 이 도구 사용. 실행 중 진행률은 monitor_pipeline 사용.",
                 "parameters": {
                     "type": "object",
                     "properties": {},
@@ -153,7 +187,7 @@ class PipelineAgent:
             },
             {
                 "name": "compare_conditions",
-                "description": "Compare QC metrics across experimental conditions",
+                "description": "RNA-seq 파이프라인 QC 지표(맵핑률, assignment rate 등)를 조건 간 비교. ⚠️ DE 분석 결과(유전자 발현 변화) 요약에는 절대 사용하지 말 것 — 그것은 read_de_results_summary 사용.",
                 "parameters": {
                     "type": "object",
                     "properties": {},
@@ -215,6 +249,23 @@ class PipelineAgent:
                         "project_id": {
                             "type": "string",
                             "description": "Project identifier (optional, uses current project if not specified)"
+                        },
+                        "exclude_samples": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Sample IDs to exclude from counts matrix and metadata (e.g. failed QC samples)."
+                        },
+                        "config_file": {
+                            "type": "string",
+                            "description": "Path to the RNA-seq project config YAML (e.g. config/projects/mouse-monSTIM-2026.yaml). The bridge script will read rnaseq_output, project_id, and species directly from this file — do NOT guess rnaseq_output separately when this is provided."
+                        },
+                        "rnaseq_output": {
+                            "type": "string",
+                            "description": "RNA-seq pipeline output directory. Only set this if config_file is NOT provided."
+                        },
+                        "de_pipeline_dir": {
+                            "type": "string",
+                            "description": "DE/GO analysis pipeline directory (overrides session/config auto-detection)"
                         }
                     },
                     "required": []
@@ -357,23 +408,61 @@ class PipelineAgent:
                     "required": ["config_file"]
                 }
             },
-            # Phase 8B tools
             {
-                "name": "monitor_pipeline",
-                "description": "Check pipeline execution status and progress by inspecting output files",
+                "name": "validate_library_type",
+                "description": (
+                    "RSeQC를 이용한 pre-flight 라이브러리 검증. "
+                    "FASTQ 서브셋을 STAR로 정렬 후 infer_experiment.py(strandedness 자동 감지)와 "
+                    "read_distribution.py(mRNA-seq 여부 확인)를 실행. "
+                    "strandedness가 config와 다르면 자동 업데이트. "
+                    "메인 파이프라인 실행 전에 호출할 것. "
+                    "트리거: '라이브러리 검증', 'strandedness 확인', 'mRNA-seq 맞는지', 'library type'"
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "project_id": {"type": "string", "description": "Project identifier"},
-                        "base_results_dir": {"type": "string", "description": "Base results directory"},
-                        "config_file": {"type": "string", "description": "Path to config.yaml (optional)"}
+                        "config_file": {"type": "string", "description": "Path to config.yaml"},
+                        "sample_id": {"type": "string", "description": "Sample ID to use for validation (default: first sample in sheet)"},
+                        "n_reads": {"type": "integer", "description": "Number of reads to subset for validation (default 500000)", "default": 500000},
+                        "cores": {"type": "integer", "description": "Threads for STAR alignment (default 8)", "default": 8}
                     },
-                    "required": ["project_id", "base_results_dir"]
+                    "required": ["config_file"]
+                }
+            },
+            {
+                "name": "setup_and_validate",
+                "description": (
+                    "FASTQ 감지 + 샘플시트 생성 + 라이브러리 검증을 한 번에 실행. "
+                    "새 프로젝트 시작 시 가장 먼저 호출할 것. "
+                    "트리거: '프로젝트 설정해줘', '한번에 설정해줘', 'setup', '설정부터 해줘', "
+                    "'처음부터 설정', '자동 설정'"
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "config_file": {"type": "string", "description": "Path to config.yaml"},
+                        "sample_id": {"type": "string", "description": "Sample ID for library validation (default: first sample)"},
+                        "n_reads": {"type": "integer", "description": "Reads to subset for validation (default 500000)", "default": 500000},
+                        "cores": {"type": "integer", "description": "Threads for STAR (default 8)", "default": 8}
+                    },
+                    "required": ["config_file"]
+                }
+            },
+            # Phase 8B tools
+            {
+                "name": "monitor_pipeline",
+                "description": "Snakemake 파이프라인이 현재 실행 중일 때 실시간 진행률 확인 (완료된 job 수, 진행 중 rule 등). '파이프라인 진행상황 알려줘', '몇 개 완료됐어?', '얼마나 됐어?', '지금 뭐 하고 있어?', 'pipeline progress' → 이 도구 사용. QC 결과/분석 완료 여부는 get_project_status 사용.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "config_file": {"type": "string", "description": "Path to config.yaml — project_id and results_dir are read from it automatically"}
+                    },
+                    "required": ["config_file"]
                 }
             },
             {
                 "name": "create_sample_sheet",
-                "description": "Generate a sample metadata TSV from detected FASTQ files, optionally assigning conditions",
+                "description": "Generate a sample metadata TSV from detected FASTQ files, optionally assigning conditions. If the TSV already exists and overwrite is not explicitly requested, preserves existing file to protect manually revised conditions.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -384,7 +473,8 @@ class PipelineAgent:
                             "description": "Optional condition mapping: {condition_name: [sample_id_substrings]}",
                             "additionalProperties": {"type": "array", "items": {"type": "string"}}
                         },
-                        "output_path": {"type": "string", "description": "Output TSV path (optional)"}
+                        "output_path": {"type": "string", "description": "Output TSV path (optional)"},
+                        "overwrite": {"type": "boolean", "description": "If false (default), skip regeneration when TSV already exists to preserve manual condition edits. Set true only when user explicitly wants to regenerate.", "default": False}
                     },
                     "required": ["project_id", "data_dir"]
                 }
@@ -409,7 +499,8 @@ class PipelineAgent:
                     "Use when user asks to: start DE analysis, connect to DE pipeline, "
                     "'DE 분석 연결해줘', 'DE 파이프라인으로 넘겨줘', 'counts 넘겨줘'. "
                     "By default skip_de=true — only prepares files (counts copy + metadata + DE config). "
-                    "Set skip_de=false only if user explicitly asks to RUN DE analysis immediately."
+                    "Set skip_de=false only if user explicitly asks to RUN DE analysis immediately. "
+                    "Use exclude_samples to drop failed/unwanted samples from counts and metadata."
                 ),
                 "parameters": {
                     "type": "object",
@@ -429,6 +520,11 @@ class PipelineAgent:
                         "dry_run": {
                             "type": "boolean",
                             "description": "If true, show what would be done without writing files."
+                        },
+                        "exclude_samples": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Sample IDs to exclude from counts matrix and metadata (e.g. failed QC samples)."
                         }
                     },
                     "required": ["config_file", "de_pipeline_dir"]
@@ -495,8 +591,185 @@ class PipelineAgent:
                     "required": ["config_file"]
                 }
             },
+            {
+                "name": "read_de_results_summary",
+                "description": (
+                    "⭐ DESeq2 DE 분석 결과 요약 — 유의미한 유전자 수(up/down), 상위 유전자 목록, GO BP 경로 반환. "
+                    "de_config_file은 생략 가능 (세션의 current_de_config 자동 사용). "
+                    "⚠️ 'DE 결과', '발현 변화', '유전자 변했어', 'D1 결과', '차발현' 관련 질문은 반드시 이 도구 사용. "
+                    "compare_conditions / get_project_status / read_counts 절대 사용 금지."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "de_config_file": {
+                            "type": "string",
+                            "description": "DE pipeline config YAML 경로 (생략 시 세션 current_de_config 사용)"
+                        },
+                        "pair": {
+                            "type": "string",
+                            "description": "특정 비교 pair (예: 'D1_vs_Control'). 생략 시 전체 pair 요약."
+                        },
+                        "top_n": {
+                            "type": "integer",
+                            "description": "상위 유전자 반환 수 (기본 10)",
+                            "default": 10
+                        }
+                    },
+                    "required": []
+                }
+            },
+            {
+                "name": "check_analysis_readiness",
+                "description": (
+                    "DE 분석 실행 전 종합 진단 — counts/metadata 파일 존재, 샘플 ID 일치, "
+                    "조건명 일치, 조건별 n 수, counts 통계를 한 번에 점검. "
+                    "de_config_file 생략 가능 (세션 current_de_config 자동 사용). "
+                    "트리거: 'DE 실행해도 돼?', '분석 준비됐어?', 'DE 전에 확인해줘', '샘플 수 맞아?'"
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "de_config_file": {
+                            "type": "string",
+                            "description": "DE pipeline config YAML 경로 (생략 가능)"
+                        }
+                    },
+                    "required": []
+                }
+            },
+            {
+                "name": "validate_de_config_conditions",
+                "description": (
+                    "DE config의 pairwise_comparisons 조건명이 metadata CSV의 실제 condition 값과 일치하는지 검증. "
+                    "불일치 감지 + 자동 수정 제안 (대소문자 차이, 1D↔D1 순서 스왑 등). "
+                    "run_bridge 완료 후 반드시 호출. "
+                    "트리거: 'DE config 검증해줘', '조건 확인해줘', run_bridge 후 자동 검증."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "de_config_file": {
+                            "type": "string",
+                            "description": "Path to the DE pipeline config YAML (e.g., configs/config_PROJECT.yml)"
+                        }
+                    },
+                    "required": []
+                }
+            },
+            {
+                "name": "apply_de_config_corrections",
+                "description": (
+                    "validate_de_config_conditions에서 발견된 조건명 불일치를 DE config에 자동 적용. "
+                    "반드시 validate_de_config_conditions 실행 후 suggestions 확인 후 호출. "
+                    "트리거: '수정해줘', '자동으로 고쳐줘', validate 후 사용자 승인 시."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "de_config_file": {
+                            "type": "string",
+                            "description": "Path to the DE pipeline config YAML"
+                        },
+                        "corrections": {
+                            "type": "object",
+                            "description": "Correction mapping from validate result: {wrong_name: correct_name}",
+                            "additionalProperties": {"type": "string"}
+                        }
+                    },
+                    "required": ["corrections"]
+                }
+            },
+            {
+                "name": "run_de_pipeline",
+                "description": (
+                    "DE-GO 분석 Snakemake 파이프라인 실행. "
+                    "⚠️ 반드시 dry_run=True(기본)로 먼저 실행해 작업 목록을 확인 후 사용자 승인을 받고 dry_run=False, background=True로 본 실행. "
+                    "트리거: 'DE 분석 실행해줘', 'DE 파이프라인 돌려줘', 'GO 분석 시작해', 'snakemake DE 실행'."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "de_config_file": {
+                            "type": "string",
+                            "description": "Path to DE config YAML. Auto-resolved from session if omitted."
+                        },
+                        "de_pipeline_dir": {
+                            "type": "string",
+                            "description": "Root dir of DE pipeline (contains Snakefile). Auto-resolved if omitted."
+                        },
+                        "cores": {"type": "integer", "default": 8},
+                        "dry_run": {"type": "boolean", "default": True},
+                        "background": {"type": "boolean", "default": False}
+                    },
+                    "required": []
+                }
+            },
+            {
+                "name": "monitor_de_pipeline",
+                "description": (
+                    "실행 중인 DE-GO 파이프라인 진행상황 확인. 로그 파싱 + PID 체크. "
+                    "트리거: 'DE 진행상황 알려줘', 'DE 파이프라인 모니터링', 'DE 얼마나 됐어?', 'DE 완료됐어?'."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "de_config_file": {
+                            "type": "string",
+                            "description": "Path to DE config YAML. Auto-resolved from session if omitted."
+                        },
+                        "de_pipeline_dir": {
+                            "type": "string",
+                            "description": "Root dir of DE pipeline. Auto-resolved if omitted."
+                        }
+                    },
+                    "required": []
+                }
+            },
+            {
+                "name": "get_pipeline_status",
+                "description": "파이프라인 단계별 완료 여부를 파일시스템으로 확인 (실행 중이 아닐 때도 사용 가능). '어디까지 됐어?', '다음에 뭐 해야 해?', '어떤 단계가 완료됐어?', '파이프라인 단계 확인' → 이 도구 사용. 실행 중인 파이프라인 실시간 진행률은 monitor_pipeline 사용.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            },
         ]
-    
+
+    def _load_session(self):
+        """Restore session state from disk (survives agent restarts)."""
+        if self.session_file.exists():
+            try:
+                with open(self.session_file) as f:
+                    state = json.load(f)
+                self.current_config = state.get("current_config") or self.current_config
+                self.current_de_pipeline_dir = state.get("current_de_pipeline_dir") or self.current_de_pipeline_dir
+                self.current_de_config = state.get("current_de_config") or self.current_de_config
+                self.current_data_dir = state.get("current_data_dir") or self.current_data_dir
+                self.current_project_id = state.get("current_project_id") or self.current_project_id
+                self.current_results_dir = state.get("current_results_dir") or self.current_results_dir
+                if self.current_config:
+                    print(f"📂 이전 세션 복원: {self.current_config}")
+            except Exception:
+                pass  # Corrupt session file — start fresh
+
+    def _save_session(self):
+        """Persist session state to disk."""
+        try:
+            state = {
+                "current_config": self.current_config,
+                "current_de_pipeline_dir": self.current_de_pipeline_dir,
+                "current_de_config": self.current_de_config,
+                "current_data_dir": self.current_data_dir,
+                "current_project_id": self.current_project_id,
+                "current_results_dir": self.current_results_dir,
+            }
+            with open(self.session_file, "w") as f:
+                json.dump(state, f, indent=2)
+        except Exception:
+            pass  # Non-fatal — session just won't persist
+
     def _resolve_config_file(self, arguments: Dict) -> Dict:
         """
         Auto-correct config_file in arguments:
@@ -522,7 +795,8 @@ class PipelineAgent:
         else:
             # Real path provided — remember it for next time
             self.current_config = cfg
-        
+            self._save_session()
+
         return arguments
 
     def _resolve_de_pipeline_dir(self, arguments: Dict) -> Dict:
@@ -549,15 +823,18 @@ class PipelineAgent:
             # else: leave as-is — run_bridge will return a clear error
         else:
             self.current_de_pipeline_dir = de
+            self._save_session()
         return arguments
 
-    def _trim_tool_result_for_llm(self, result: Dict) -> Dict:
+    def _trim_tool_result_for_llm(self, result) -> Dict:
         """
         Return a compact version of a tool result for the LLM message.
         Removes large per-sample arrays (per_sample, multiqc_stats,
         fastqc_evaluation) that can overflow the context window, keeping
         only summary-level statistics that the LLM needs to answer the user.
         """
+        if not isinstance(result, dict):
+            return {"result": result}
         trimmed = {}
         for k, v in result.items():
             if k == "star_alignment" and isinstance(v, dict):
@@ -584,7 +861,26 @@ class PipelineAgent:
         ):
             arguments = self._resolve_config_file(arguments)
         
-        if tool_name == "get_project_status":
+        if tool_name == "switch_project":
+            # Clear all session state to start a new project
+            self.current_config = None
+            self.current_project_id = None
+            self.current_data_dir = None
+            self.current_results_dir = None
+            self.current_de_pipeline_dir = None
+            self.current_de_config = None
+            new_cfg = arguments.get("new_config")
+            if new_cfg:
+                self.current_config = new_cfg
+            self._save_session()
+            msg = "세션 초기화 완료. 새 프로젝트를 시작할 준비가 됐습니다."
+            if new_cfg:
+                msg += f" Config: {new_cfg}"
+            else:
+                msg += " 새 프로젝트 config 경로를 알려주세요 (또는 '프로젝트 설정해줘'로 자동 설정)."
+            return {"status": "success", "message": msg}
+
+        elif tool_name == "get_project_status":
             result = subprocess.run([
                 "python", "scripts/standardization/agent_query.py",
                 "--project-summary", str(self.project_summary_path),
@@ -658,22 +954,39 @@ class PipelineAgent:
         
         elif tool_name == "prepare_de_analysis":
             project_id = arguments.get("project_id", self.project_id)
-            
+
             # Security: Validate project_id
             if SECURITY_ENABLED:
                 try:
                     project_id = validate_project_id(project_id)
                 except SecurityError as e:
                     return {"status": "error", "message": f"Security validation failed: {e}"}
-            
-            # Run bridge script in preparation mode (--skip-de)
-            result = subprocess.run([
+
+            # config_file takes priority: let the bridge script parse paths from it directly
+            config_file = arguments.get("config_file")
+            rnaseq_output = arguments.get("rnaseq_output") or self.current_results_dir
+            de_pipeline_dir = arguments.get("de_pipeline_dir") or self.current_de_pipeline_dir or self.de_pipeline_dir
+
+            # Build command — omit --project-id when config_file is given (bridge parses it)
+            cmd = [
                 "conda", "run", "-n", "rna-seq-pipeline",
                 "python", "scripts/bridge_to_de_pipeline.py",
-                "--project-id", project_id,
                 "--skip-de",
                 "--yes"
-            ], capture_output=True, text=True, cwd="/data_3tb/shared/rna-seq-pipeline")
+            ]
+            if config_file:
+                cmd += ["--config", str(config_file)]
+            else:
+                cmd += ["--project-id", project_id]
+                if rnaseq_output:
+                    cmd += ["--rnaseq-output", str(rnaseq_output)]
+            if de_pipeline_dir:
+                cmd += ["--de-pipeline", str(de_pipeline_dir)]
+
+            # Run bridge script in preparation mode (--skip-de)
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, cwd="/data_3tb/shared/rna-seq-pipeline"
+            )
             
             return {
                 "status": "success" if result.returncode == 0 else "failed",
@@ -795,6 +1108,13 @@ class PipelineAgent:
                     memory_gb=arguments.get('memory_gb', 48),
                     strandedness=arguments.get('strandedness', 0),
                 )
+                # Auto-capture config path so subsequent tools don't need it repeated
+                if result.get('status') == 'success' and result.get('config_path'):
+                    self.current_config = result['config_path']
+                    self.current_project_id = arguments['project_id']
+                    self.current_data_dir = arguments['data_dir']
+                    self.current_results_dir = arguments['results_dir']
+                    self._save_session()
                 return result
             except Exception as e:
                 return {"status": "error", "message": str(e)}
@@ -803,6 +1123,10 @@ class PipelineAgent:
             try:
                 from scripts.utils.pipeline_tools import detect_fastq_files
                 result = detect_fastq_files(arguments['data_dir'])
+                # Remember the data_dir for subsequent create_project_config calls
+                if result.get('status') != 'error':
+                    self.current_data_dir = arguments['data_dir']
+                    self._save_session()
                 return result
             except Exception as e:
                 return {"status": "error", "message": str(e)}
@@ -815,6 +1139,32 @@ class PipelineAgent:
             except Exception as e:
                 return {"status": "error", "message": str(e)}
         
+        elif tool_name == "validate_library_type":
+            try:
+                from scripts.utils.pipeline_tools import validate_library_type
+                cfg_resolved = self._resolve_config_file(arguments)
+                return validate_library_type(
+                    config_file=cfg_resolved.get('config_file') or arguments['config_file'],
+                    n_reads=arguments.get('n_reads', 500_000),
+                    cores=arguments.get('cores', 8),
+                    sample_id=arguments.get('sample_id'),
+                )
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+
+        elif tool_name == "setup_and_validate":
+            try:
+                from scripts.utils.pipeline_tools import setup_and_validate
+                cfg_resolved = self._resolve_config_file(arguments)
+                return setup_and_validate(
+                    config_file=cfg_resolved.get('config_file') or arguments['config_file'],
+                    n_reads=arguments.get('n_reads', 500_000),
+                    cores=arguments.get('cores', 8),
+                    sample_id=arguments.get('sample_id'),
+                )
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+
         elif tool_name == "run_pipeline":
             try:
                 from scripts.utils.pipeline_tools import run_pipeline
@@ -832,10 +1182,23 @@ class PipelineAgent:
         elif tool_name == "monitor_pipeline":
             try:
                 from scripts.utils.pipeline_tools import monitor_pipeline
+                import yaml as _yaml
+                config_file = self._resolve_config_file(arguments).get('config_file') or arguments.get('config_file', '')
+                # Auto-extract project_id and base_results_dir from config
+                project_id = arguments.get('project_id', '')
+                base_results_dir = arguments.get('base_results_dir', '')
+                if (not project_id or not base_results_dir) and config_file:
+                    with open(config_file) as _f:
+                        _cfg = _yaml.safe_load(_f)
+                    project_id = project_id or _cfg.get('project_id', '')
+                    results_dir = _cfg.get('results_dir') or _cfg.get('base_results_dir', '')
+                    if not base_results_dir and results_dir:
+                        _rp = Path(results_dir)
+                        base_results_dir = str(_rp.parent) if _rp.name == project_id else str(_rp)
                 return monitor_pipeline(
-                    project_id=arguments['project_id'],
-                    base_results_dir=arguments['base_results_dir'],
-                    config_file=arguments.get('config_file'),
+                    project_id=project_id,
+                    base_results_dir=base_results_dir,
+                    config_file=config_file,
                 )
             except Exception as e:
                 return {"status": "error", "message": str(e)}
@@ -848,6 +1211,7 @@ class PipelineAgent:
                     data_dir=arguments['data_dir'],
                     conditions=arguments.get('conditions'),
                     output_path=arguments.get('output_path'),
+                    overwrite=arguments.get('overwrite', False),
                 )
             except Exception as e:
                 return {"status": "error", "message": str(e)}
@@ -867,12 +1231,18 @@ class PipelineAgent:
             try:
                 arguments = self._resolve_de_pipeline_dir(arguments)
                 from scripts.utils.pipeline_tools import run_bridge
-                return run_bridge(
+                result = run_bridge(
                     config_file=arguments['config_file'],
                     de_pipeline_dir=arguments['de_pipeline_dir'],
                     skip_de=arguments.get('skip_de', True),
                     dry_run=arguments.get('dry_run', False),
+                    exclude_samples=arguments.get('exclude_samples', []),
                 )
+                # Auto-save DE config path for cognition tools
+                if result.get("status") == "success" and result.get("de_config_file"):
+                    self.current_de_config = result["de_config_file"]
+                    self._save_session()
+                return result
             except Exception as e:
                 return {"status": "error", "message": str(e)}
 
@@ -921,6 +1291,91 @@ class PipelineAgent:
             except Exception as e:
                 return {"status": "error", "message": str(e)}
 
+        elif tool_name == "read_de_results_summary":
+            try:
+                from scripts.utils.pipeline_tools import read_de_results_summary
+                de_cfg = arguments.get("de_config_file") or self.current_de_config
+                if not de_cfg:
+                    return {"status": "error", "message": "DE config 경로가 없습니다. run_bridge를 먼저 실행하거나 de_config_file 경로를 직접 전달해 주세요."}
+                return read_de_results_summary(
+                    de_config_file=de_cfg,
+                    pair=arguments.get("pair"),
+                    top_n=arguments.get("top_n", 10),
+                )
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+
+        elif tool_name == "check_analysis_readiness":
+            try:
+                from scripts.utils.pipeline_tools import check_analysis_readiness
+                de_cfg = arguments.get("de_config_file") or self.current_de_config
+                if not de_cfg:
+                    return {"status": "error", "message": "DE config 경로가 없습니다. run_bridge를 먼저 실행하거나 de_config_file 경로를 직접 전달해 주세요."}
+                return check_analysis_readiness(de_config_file=de_cfg)
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+
+        elif tool_name == "validate_de_config_conditions":
+            try:
+                from scripts.utils.pipeline_tools import validate_de_config_conditions
+                de_cfg = arguments.get("de_config_file") or self.current_de_config
+                if not de_cfg:
+                    return {"status": "error", "message": "DE config 경로가 없습니다."}
+                return validate_de_config_conditions(de_config_file=de_cfg)
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+
+        elif tool_name == "apply_de_config_corrections":
+            try:
+                from scripts.utils.pipeline_tools import apply_de_config_corrections
+                de_cfg = arguments.get("de_config_file") or self.current_de_config
+                if not de_cfg:
+                    return {"status": "error", "message": "DE config 경로가 없습니다."}
+                return apply_de_config_corrections(
+                    de_config_file=de_cfg,
+                    corrections=arguments["corrections"],
+                )
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+
+        elif tool_name == "run_de_pipeline":
+            try:
+                from scripts.utils.pipeline_tools import run_de_pipeline
+                de_cfg = arguments.get("de_config_file") or self.current_de_config
+                de_dir = arguments.get("de_pipeline_dir") or self.current_de_pipeline_dir
+                if not de_cfg:
+                    return {"status": "error", "message": "DE config 경로가 없습니다. de_config_file을 지정하거나 run_bridge를 먼저 실행하세요."}
+                return run_de_pipeline(
+                    de_config_file=de_cfg,
+                    de_pipeline_dir=de_dir,
+                    cores=arguments.get("cores", 8),
+                    dry_run=arguments.get("dry_run", True),
+                    background=arguments.get("background", False),
+                )
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+
+        elif tool_name == "monitor_de_pipeline":
+            try:
+                from scripts.utils.pipeline_tools import monitor_de_pipeline
+                de_cfg = arguments.get("de_config_file") or self.current_de_config
+                de_dir = arguments.get("de_pipeline_dir") or self.current_de_pipeline_dir
+                return monitor_de_pipeline(de_config_file=de_cfg, de_pipeline_dir=de_dir)
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+
+        elif tool_name == "get_pipeline_status":
+            try:
+                from scripts.utils.pipeline_tools import get_pipeline_status
+                return get_pipeline_status(
+                    config_file=self.current_config,
+                    data_dir=self.current_data_dir,
+                    results_dir=self.current_results_dir,
+                    de_pipeline_dir=self.current_de_pipeline_dir,
+                )
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+
         # ── Aliases for commonly hallucinated tool names ─────────────────
         elif tool_name in ("get_project_status", "check_pipeline_status", "pipeline_status"):
             # Redirect to monitor_pipeline using config_file
@@ -948,6 +1403,33 @@ class PipelineAgent:
                          f"Please call one of the available tools."
             }
     
+    def _build_pipeline_status_block(self) -> str:
+        """파이프라인 진행 상태를 파일시스템에서 추론해 compact 텍스트로 반환."""
+        try:
+            from scripts.utils.pipeline_tools import get_pipeline_status
+            status = get_pipeline_status(
+                config_file=self.current_config,
+                data_dir=self.current_data_dir,
+                results_dir=self.current_results_dir,
+                de_pipeline_dir=self.current_de_pipeline_dir,
+            )
+            completed = status.get("completed", [])
+            steps = status.get("steps", {})
+            done_labels = [steps[s]["label"] for s in completed if s in steps]
+            pending_labels = [v["label"] for s, v in steps.items() if not v["done"]]
+            lines = [
+                "Pipeline progress:",
+                f"  {status['summary']}",
+            ]
+            if done_labels:
+                lines.append(f"  완료: {', '.join(done_labels)}")
+            if pending_labels:
+                lines.append(f"  미완료: {', '.join(pending_labels)}")
+            lines.append(f"  → 다음 단계: {status['next_suggestion']}")
+            return "\n".join(lines)
+        except Exception:
+            return ""
+
     def _build_system_prompt(self, native_tools: bool = False) -> str:
         """Build system prompt with project context and tool usage instructions.
         
@@ -978,6 +1460,36 @@ FILTERING RULES:
 - Available condition values: "wildtype", "heterozygous"
 - Available sex values: "Male", "Female"
 
+## Reasoning Protocol — Think Before Acting
+
+Before calling any tool, briefly assess the situation:
+1. **Intent**: What does the user actually want? (not just the literal words)
+2. **State check**: Does the current session have what's needed?
+   - If config_file is 'not yet set' and a pipeline tool is requested → ask for config path first
+   - If results_dir is missing and QC is requested → explain pipeline hasn't run yet
+3. **Multi-step planning**: If the request requires >1 tool, identify the sequence before starting.
+   Example: "DE 분석 준비해줘" → run_bridge → THEN validate_de_config_conditions (always)
+4. **Anomaly detection**: After tool results arrive, check if the output looks suspicious
+   (e.g., 0 samples, condition names that don't match, unusually low mapping rates).
+   If something looks wrong, say so before moving on.
+
+Keep this reasoning brief (1-2 sentences) — do NOT show the reasoning to the user unless it changes your action.
+
+## Post-Tool Validation Rules
+
+- After **run_bridge** completes → ALWAYS call `validate_de_config_conditions` automatically.
+  Do not wait for user to ask. If mismatch found → show suggestions and ask "수정할까요?"
+- After **validate_de_config_conditions** shows mismatches + user confirms → call `apply_de_config_corrections`.
+- After **create_sample_sheet** with new conditions → remind user to re-run run_bridge if DE config already exists.
+- Before recommending DE pipeline execution → suggest calling `check_analysis_readiness` first if not yet done.
+- After DE pipeline completes → proactively offer `read_de_results_summary` ("결과 요약해드릴까요?").
+
+CRITICAL TOOL ROUTING RULES (DO NOT VIOLATE):
+- "DE 결과", "차발현", "유전자 변화", "D1 결과", "발현량 변화", "DE 요약" → read_de_results_summary (de_config_file 생략 가능)
+- "QC 결과", "맵핑률", "샘플 통과" → get_project_status 또는 compare_conditions
+- "파이프라인 진행" → monitor_pipeline
+- compare_conditions는 QC 지표 비교 전용. DE 결과에 절대 사용 금지.
+
 IMPORTANT:
 1. Call the appropriate tool when action is needed
 2. Extract parameters from user's natural language
@@ -989,9 +1501,15 @@ IMPORTANT:
 6. For run_bridge: ALWAYS use the CURRENT DE PIPELINE DIR: {self.current_de_pipeline_dir or 'not set — ask user for DE pipeline directory path'}
    Do NOT invent de_pipeline_dir paths.
 
-Current session config: {self.current_config or 'not yet set'}
-Current DE pipeline dir: {self.current_de_pipeline_dir or 'not yet set'}
+Current session state:
+- config_file:     {self.current_config or 'not yet set'}
+- project_id:      {self.current_project_id or 'not yet set'}
+- data_dir (FASTQ): {self.current_data_dir or 'not yet set'}
+- results_dir:     {self.current_results_dir or 'not yet set'}
+- de_pipeline_dir: {self.current_de_pipeline_dir or 'not yet set'}
+- de_config_file:  {self.current_de_config or 'not yet set'}  ← use for read_de_results_summary / check_analysis_readiness
 
+{self._build_pipeline_status_block()}
 Be conversational, clear, and actionable. When showing numbers, include units and context.
 """
 
@@ -1010,7 +1528,7 @@ TOOL_CALL: {"name": "tool_name", "parameters": {"param1": "value1"}}
 ```
 
 Examples (Analysis Management):
-- User: "QC 상태 보여줘" → TOOL_CALL: {{"name": "get_project_status", "parameters": {{}}}}
+- User: "QC 상태 보여줘", "QC 결과 어때?", "몇 개 통과했어?", "샘플 QC 요약" → TOOL_CALL: {{"name": "get_project_status", "parameters": {{}}}}  ← QC 결과 조회 (파이프라인 완료 후)
 - User: "Ctrl_1 샘플 정보 알려줘" → TOOL_CALL: {{"name": "get_sample_details", "parameters": {{"sample_id": "Ctrl_1"}}}}
 - User: "DE 분석 준비해줘" → TOOL_CALL: {{"name": "prepare_de_analysis", "parameters": {{"project_id": "{self.project_id}"}}}}
 
@@ -1018,6 +1536,37 @@ Examples (Multi-axis Analysis):
 - User: "어떤 그룹이 있어?" → TOOL_CALL: {{"name": "get_sample_axes", "parameters": {{}}}}
 - User: "HPC에서만 wildtype vs heterozygous 비교해줘" → TOOL_CALL: {{"name": "compare_by_axis", "parameters": {{"axis": "condition", "filters": {{"tissue": "Hippocampus"}}}}}}
 - User: "Male HPC wildtype 샘플 목록" → TOOL_CALL: {{"name": "filter_samples", "parameters": {{"filters": {{"tissue": "Hippocampus", "sex": "Male", "condition": "wildtype"}}}}}}
+
+Examples (Sample Sheet Creation):
+IMPORTANT WORKFLOW — When user asks to create a sample sheet:
+1. If you already have the sample list from detect_fastq_files, analyze sample name patterns to infer conditions.
+2. Build a conditions mapping: {{"condition_name": ["prefix_or_substring", ...]}}
+3. Call create_sample_sheet WITH the conditions parameter populated.
+4. If conditions are unclear from names, ask the user: "샘플 이름에서 조건을 자동 추론했습니다: [list]. 맞나요?"
+   Common patterns: *WT*/*Wild*/*Ctrl* → wildtype, *KO*/*Het*/*Mut* → mutant, *Tg*/*treat* → treatment, n*Tg* → non_stimulated
+- User: "샘플 시트 만들어줘" (after detect shows MonWT1,MonWT2,MonTg1,nMonTg1) →
+  TOOL_CALL: {{"name": "create_sample_sheet", "parameters": {{"project_id": "{proj}", "data_dir": "{ddir}", "conditions": {{"wildtype": ["MonWT"], "transgenic": ["MonTg"], "non_stimulated": ["nMonTg"]}}}}}}
+- User: "MonWT는 wildtype, MonTg는 transgenic, nMonTg는 non_stimulated야, 샘플 시트 만들어줘" →
+  TOOL_CALL: {{"name": "create_sample_sheet", "parameters": {{"project_id": "{proj}", "data_dir": "{ddir}", "conditions": {{"wildtype": ["MonWT"], "transgenic": ["MonTg"], "non_stimulated": ["nMonTg"]}}}}}}
+- User: "샘플 시트 만들어줘" (generic, no prior detect) →
+  TOOL_CALL: {{"name": "create_sample_sheet", "parameters": {{"project_id": "{proj}", "data_dir": "{ddir}"}}}}
+
+Examples (Project Switching — 현재 세션을 초기화하고 새 프로젝트 시작):
+- User: "새 프로젝트 시작할게", "다른 프로젝트 분석하고 싶어", "프로젝트 바꿔줘", "새로 시작" →
+  TOOL_CALL: {{"name": "switch_project", "parameters": {{}}}}
+- User: "mouse-monSTIM 프로젝트로 바꿔줘" →
+  TOOL_CALL: {{"name": "switch_project", "parameters": {{"new_config": "config/projects/mouse-monSTIM-2026.yaml"}}}}
+- switch_project 후에는 자동으로 현재 config가 비워지므로, 사용자에게 새 프로젝트 config 경로 또는 'setup' 실행을 안내할 것.
+
+Examples (One-shot Setup — FASTQ 감지 + 샘플시트 + 라이브러리 검증 한번에):
+- User: "프로젝트 설정해줘", "한번에 설정해줘", "setup", "설정부터 해줘", "처음부터 설정", "자동 설정" →
+  TOOL_CALL: {{"name": "setup_and_validate", "parameters": {{"config_file": "{cfg}"}}}}
+- User: "nMonTg4 샘플로 설정해줘" →
+  TOOL_CALL: {{"name": "setup_and_validate", "parameters": {{"config_file": "{cfg}", "sample_id": "nMonTg4_S25"}}}}
+
+Examples (Library Validation — run BEFORE main pipeline):
+- User: "라이브러리 검증해줘", "strandedness 확인해줘", "mRNA-seq 맞는지 확인해줘", "library type 확인" →
+  TOOL_CALL: {{"name": "validate_library_type", "parameters": {{"config_file": "{cfg}"}}}}
 
 Examples (Pipeline Execution):
 - User: "/data/raw/ 폴더에서 FASTQ 파일 찾아줘" → TOOL_CALL: {{"name": "detect_fastq_files", "parameters": {{"data_dir": "/data/raw"}}}}
@@ -1031,12 +1580,40 @@ Examples (Project/Pipeline Information):
 - User: "이 프로젝트 설정이 어떻게 돼 있어?" → TOOL_CALL: {{"name": "read_project_config", "parameters": {{"config_file": "{cfg}"}}}}
 - User: "샘플 목록 보여줘", "어떤 조건이 있어?", "wildtype 샘플 몇 개야?" → TOOL_CALL: {{"name": "read_sample_sheet", "parameters": {{"config_file": "{cfg}"}}}}
 - User: "QC 결과 어때?", "매핑률 낮은 샘플 있어?", "어떤 샘플이 실패했어?" → TOOL_CALL: {{"name": "read_qc_results", "parameters": {{"config_file": "{cfg}"}}}}
-- User: "현재 상태 보여줘", "진행률 어때?", "얼마나 됐어?", "show status" → TOOL_CALL: {{"name": "monitor_pipeline", "parameters": {{"config_file": "{cfg}"}}}}
+- User: "파이프라인 진행상황 알려줘", "몇 개 완료됐어?", "얼마나 됐어?", "지금 뭐 하고 있어?", "show progress", "진행률 보여줘" → TOOL_CALL: {{"name": "monitor_pipeline", "parameters": {{"config_file": "{cfg}"}}}}  ← 실행 중 실시간 진행률
+- User: "어디까지 됐어?", "다음에 뭐 해야 해?", "어떤 단계 완료됐어?", "파이프라인 몇 단계까지 왔어?" → TOOL_CALL: {{"name": "get_pipeline_status", "parameters": {{}}}}  ← 단계 완료 여부 (비실시간)
 - User: "특정유전자 발현량 보여줘" → TOOL_CALL: {{"name": "read_counts", "parameters": {{"config_file": "{cfg}", "genes": ["GENE_NAME"]}}}}
 - User: "가장 많이 발현된 유전자 보여줘" → TOOL_CALL: {{"name": "read_counts", "parameters": {{"config_file": "{cfg}", "top_n": 20}}}}
 - User: "로그 보여줘", "에러 있어?" → TOOL_CALL: {{"name": "read_pipeline_logs", "parameters": {{"config_file": "{cfg}"}}}}
 - User: "SAMPLE_ID STAR 로그 보여줘" → TOOL_CALL: {{"name": "read_pipeline_logs", "parameters": {{"config_file": "{cfg}", "rule": "star", "sample_id": "SAMPLE_ID"}}}}
 - User: "DE 분석 연결해줘", "DE 파이프라인으로 넘겨줘", "counts 넘겨줘" → TOOL_CALL: {{"name": "run_bridge", "parameters": {{"config_file": "{cfg}", "de_pipeline_dir": "{de}", "skip_de": true}}}}
+- User: "MonTg1_S17, MonTg5_S20 제외하고 DE 준비해줘" → TOOL_CALL: {{"name": "run_bridge", "parameters": {{"config_file": "{cfg}", "de_pipeline_dir": "{de}", "skip_de": true, "exclude_samples": ["MonTg1_S17", "MonTg5_S20"]}}}}
+- User: "exclude-samples A B, DE 준비, rnaseq-output X, de-pipeline Y" → TOOL_CALL: {{"name": "run_bridge", "parameters": {{"config_file": "{cfg}", "de_pipeline_dir": "Y", "skip_de": true, "exclude_samples": ["A", "B"]}}}}
+
+CRITICAL: If the user mentions "exclude", "제외", "빼고" with sample IDs → ALWAYS include "exclude_samples" in run_bridge parameters. Never omit it.
+
+Examples (DE Config Validation — run_bridge 후 자동 실행):
+- [After run_bridge success] → TOOL_CALL: {{"name": "validate_de_config_conditions", "parameters": {{"de_config_file": "<de_config_path from run_bridge result>"}}}}
+- User: "DE config 검증해줘", "조건 이름 맞는지 확인해줘" → TOOL_CALL: {{"name": "validate_de_config_conditions", "parameters": {{"de_config_file": "<de_config_path>"}}}}
+- [After validate shows mismatches + user says "수정해줘" or "고쳐줘"] → TOOL_CALL: {{"name": "apply_de_config_corrections", "parameters": {{"de_config_file": "<path>", "corrections": {{<suggestions from validate result>}}}}}}
+- User: "자동으로 수정해줘" → apply_de_config_corrections with suggestions dict from previous validate result
+
+Examples (DE 실행 전 진단):
+- User: "DE 실행해도 돼?", "분석 준비됐어?", "샘플 수 맞아?", "DE 전에 확인해줘" → TOOL_CALL: {{"name": "check_analysis_readiness", "parameters": {{"de_config_file": "<de_config_path>"}}}}
+- [Before suggesting snakemake DE run] → proactively call check_analysis_readiness first
+
+Examples (DE-GO 파이프라인 실행):
+- User: "DE 분석 실행해줘", "DE 파이프라인 돌려줘", "GO 분석 시작해", "snakemake DE 실행"
+  → Step 1: TOOL_CALL: {{"name": "run_de_pipeline", "parameters": {{"dry_run": true}}}}
+  → Step 2: dry-run 결과를 사용자에게 보여주고 "실행할까요?" 확인
+  → Step 3 (승인 시): TOOL_CALL: {{"name": "run_de_pipeline", "parameters": {{"dry_run": false, "background": true}}}}
+- User: "DE dry-run만 해줘", "DE 실행 전 확인해줘" → TOOL_CALL: {{"name": "run_de_pipeline", "parameters": {{"dry_run": true}}}}
+- User: "DE 진행상황 알려줘", "DE 파이프라인 모니터링해줘", "DE 얼마나 됐어?", "DE 완료됐어?" → TOOL_CALL: {{"name": "monitor_de_pipeline", "parameters": {{}}}}
+
+Examples (DE 결과 해석):
+- User: "DE 결과 어때?", "결과 요약해줘", "어떤 유전자 변했어?", "분석 결과 보여줘" → TOOL_CALL: {{"name": "read_de_results_summary", "parameters": {{"de_config_file": "<de_config_path>"}}}}
+- User: "D1 결과만 보여줘", "D3 vs Control 결과 어때?" → TOOL_CALL: {{"name": "read_de_results_summary", "parameters": {{"de_config_file": "<de_config_path>", "pair": "D1_vs_Control"}}}}
+- [After DE pipeline completes successfully] → offer: "결과 요약해드릴까요?" and call read_de_results_summary if user agrees
 
 CRITICAL RULE: "실행해줘", "돌려줘", "시작해줘", "run", "execute", "start pipeline" → ALWAYS use run_pipeline with dry_run=false.
 "dry-run", "미리보기" → run_pipeline with dry_run=true.
@@ -1051,7 +1628,10 @@ CRITICAL RULE: "실행해줘", "돌려줘", "시작해줘", "run", "execute", "s
         # Substitute session-state placeholders in examples
         _cfg = self.current_config or "config/projects/your_project.yaml"
         _de = self.current_de_pipeline_dir or "/path/to/de_pipeline"
+        _proj = self.current_project_id or "your_project_id"
+        _ddir = self.current_data_dir or "/path/to/fastq"
         examples = examples.replace("{cfg}", _cfg).replace("{de}", _de)
+        examples = examples.replace("{proj}", _proj).replace("{ddir}", _ddir)
         return base + examples
 
     def _extract_tool_call(self, text: str) -> Optional[Dict]:
@@ -1191,7 +1771,7 @@ CRITICAL RULE: "실행해줘", "돌려줘", "시작해줘", "run", "execute", "s
     
     # Models known to support Ollama native tool calling
     _NATIVE_TOOL_CALLING_MODELS = {
-        "qwen2.5", "qwen2", "llama3.1", "llama3.2", "llama3.3",
+        "qwen3", "qwen2.5", "qwen2", "llama3.1", "llama3.2", "llama3.3",
         "mistral", "mistral-nemo", "mixtral", "firefunction",
         "command-r", "smollm2", "hermes3", "granite3",
     }
@@ -1495,6 +2075,15 @@ def main():
         help='Ollama server URL (default: http://localhost:11434)'
     )
     parser.add_argument(
+        '--config',
+        help='Resume from existing project config YAML (sets current_config for this session)'
+    )
+    parser.add_argument(
+        '--reset-session',
+        action='store_true',
+        help='Clear saved session state and start fresh'
+    )
+    parser.add_argument(
         '--interactive',
         action='store_true',
         help='Start interactive chat session'
@@ -1503,9 +2092,15 @@ def main():
         '--message',
         help='Single message to process (non-interactive mode)'
     )
-    
+
     args = parser.parse_args()
-    
+
+    # Handle session reset before agent init
+    session_file = _project_root / ".agent_session.json"
+    if args.reset_session and session_file.exists():
+        session_file.unlink()
+        print("🗑️  세션 초기화 완료")
+
     # Initialize agent
     try:
         agent = PipelineAgent(
@@ -1520,7 +2115,13 @@ def main():
     except Exception as e:
         print(f"❌ Failed to initialize agent: {e}")
         sys.exit(1)
-    
+
+    # --config overrides session file (allows explicit resume)
+    if args.config:
+        agent.current_config = args.config
+        agent._save_session()
+        print(f"📂 Config 설정: {args.config}")
+
     if args.interactive:
         # Interactive mode
         print(f"🤖 RNA-seq Pipeline Agent")
@@ -1529,6 +2130,8 @@ def main():
         else:
             print(f"Mode: Pipeline execution (no project summary loaded)")
             print(f"      Use detect_fastq_files, create_project_config, run_pipeline, etc.")
+        if agent.current_config:
+            print(f"현재 프로젝트: {agent.current_config}")
         print(f"Type 'exit' or 'quit' to end session\n")
         
         while True:

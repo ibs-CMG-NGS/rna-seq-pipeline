@@ -1,8 +1,8 @@
 # Phase 8: Pipeline Execution Tools
 
-**Objective**: Enable agent to execute full RNA-seq pipeline from raw FASTQ  
-**Status**: ✅ Phase 8A COMPLETE & TESTED | ✅ Phase 8B COMPLETE & TESTED  
-**Date**: 2026-03-04 (8A) / 2026-03-05 (8B)
+**Objective**: Enable agent to execute full RNA-seq pipeline from raw FASTQ
+**Status**: ✅ Phase 8A COMPLETE & TESTED | ✅ Phase 8B COMPLETE & TESTED | ✅ Phase 9 (RSeQC Library Validation) COMPLETE | ✅ Phase 10 (DE-GO Pipeline Execution) COMPLETE
+**Date**: 2026-03-04 (8A) / 2026-03-05 (8B) / 2026-03-11 (Phase 9) / 2026-03-13 (Phase 10)
 
 ## Testing Results — Phase 8A (2026-03-04)
 
@@ -73,7 +73,167 @@ featureCounts   → featurecounts_quant 완료 수
 
 ---
 
-## New Tools to Add
+---
+
+## Phase 9: RSeQC Library Validation (2026-03-11)
+
+**Objective**: Pre-flight library type verification before pipeline execution
+**Status**: ✅ COMPLETE & TESTED (mouse-chd8, mouse-monSTIM-2026)
+
+### New Tools
+
+#### `validate_library_type(config_file, n_reads=500_000, cores=8, sample_id=None)`
+RSeQC 기반 라이브러리 검증. 파이프라인 실행 전 자동 호출 권장.
+
+**동작 순서:**
+1. GTF→BED12 변환 (`_gtf_to_bed12()` 순수 Python 구현, `{genome_dir}/annotation_rseqc.bed`에 캐시)
+2. 대표 샘플 선택 (`sample_id` 지정 또는 sample sheet 첫 번째)
+3. FASTQ 서브셋 추출 (head -N lines, gz/uncompressed 모두 지원)
+4. STAR 임시 정렬 → BAM index
+5. `infer_experiment.py` → strandedness 감지 (0/1/2)
+6. `read_distribution.py` → exon_pct, intergenic_pct 계산
+7. strandedness가 config와 다르면 YAML 자동 업데이트
+8. 임시 파일 정리
+
+**판정 기준:**
+- strandedness: failed>0.75 → 0(unstranded), 1++>0.6 → 1(forward), 1+-?>0.6 → 2(reverse)
+- mRNA-seq: exon_pct>60% → OK, exon_pct<30% or intergenic>40% → 경고
+
+**주의사항:**
+- `gtf_to_gene_bed.py`는 RSeQC 5.x에서 제거됨 → `_gtf_to_bed12()` 순수 Python 대체 구현
+- `read_distribution.py` 출력 파싱: col[2](Tag_count) 사용, col[1](Total_bases) 아님
+
+#### `setup_and_validate(config_file, sample_id=None, n_reads=500_000, cores=8)`
+detect_fastq_files + create_sample_sheet + validate_library_type 통합.
+config에서 data_dir, project_id, sample_sheet 경로를 자동 추출.
+반환: `{fastq_detection, sample_sheet, library_validation, summary(Korean)}`
+
+**트리거 예시:** "프로젝트 설정해줘", "한번에 설정해줘", "setup"
+
+### Testing Results (Phase 9)
+
+| 프로젝트 | 샘플 | strandedness 감지 | exon_pct | 판정 | config 업데이트 |
+|----------|------|-------------------|----------|------|-----------------|
+| mouse-chd8 | Chd8_HPC_10M_W_1 | reverse (2) | ~71% | mRNA-seq ✅ | 0 → 2 ✅ |
+| mouse-monSTIM | nMonTg4_S25 | - | 67% | mRNA-seq ✅ | - |
+| mouse-monSTIM | MonTg1_S17 | - | 31.7% | suspicious ⚠️ | - (데이터 손상) |
+
+### Bugs Fixed (Phase 9)
+
+| Bug | Fix |
+|-----|-----|
+| `gtf_to_gene_bed.py` not found (RSeQC 5.x) | `_gtf_to_bed12()` 순수 Python 구현으로 대체 |
+| STAR BAM not found (`Path / ""`) | `star_out_prefix = str(star_out_dir) + "/"` trailing slash 추가 |
+| `read_distribution.py` 파싱 오류 (exon_pct 27714%) | `parts[2]` (Tag_count) 사용, `parts[1]` (Total_bases) 아님 |
+| `fastqc_raw` mv-to-same-file 오류 | `[ src != dst ] && mv || true` 조건부 실행 |
+| `monitor_pipeline` project_id 미설정 오류 | `_execute_tool`에서 config YAML 자동 파싱 |
+| `run_pipeline` snakemake not found (VS Code) | 다중 후보 탐색 + subprocess PATH 주입 |
+| `create_project_config` double path | `if _rp.name == project_id` 검사 추가 |
+
+### VS Code Integration (2026-03-11)
+
+`.vscode/tasks.json` 추가 — `conda run --no-capture-output -n rna-seq-pipeline` 방식:
+- **RNA-seq Agent (interactive)** — `Ctrl+Shift+B` 기본 태스크
+- **RNA-seq Agent (with existing project)** — config 경로 입력 프롬프트
+- **RNA-seq Agent (reset session)** — `.agent_session.json` 초기화 후 시작
+
+현재 모델: `qwen3:14b`
+
+---
+
+---
+
+## Phase 10: DE-GO Pipeline Execution (2026-03-13)
+
+**Objective**: Agent가 DE-GO Snakemake 파이프라인을 직접 실행/모니터링
+**Status**: ✅ COMPLETE & TESTED (dry-run: 172 jobs, 16 rules 정상 파싱)
+
+### New Tools
+
+#### `run_de_pipeline(de_config_file, de_pipeline_dir=None, cores=8, dry_run=True, background=False)`
+DE-GO Snakemake 파이프라인 실행. `run_pipeline()`과 동일한 패턴.
+
+**핵심 동작:**
+- DE Snakefile 위치: `de_pipeline_dir/Snakefile` (또는 `de_config_file`로부터 워크업)
+- 명령어: `snakemake --snakefile <sf> --configfile <cfg> --use-conda --cores <N> --directory <dir>`
+- `--use-conda` 필수: 모든 DE rules가 `conda: "rna-seq-de-go-analysis"` 사용
+- `background=True`: `subprocess.Popen` + `logs/snakemake_<stem>.pid/log` 저장
+- dry-run 파싱: `run_pipeline()`과 동일한 `Job stats:` 파서 재사용
+
+**Session auto-resolve:**
+- `de_config_file` 미제공 시 `self.current_de_config` 자동 주입
+- `de_pipeline_dir` 미제공 시 `self.current_de_pipeline_dir` 자동 주입
+- `run_bridge` 성공 후 두 값 모두 세션에 자동 저장됨 → 별도 지정 불필요
+
+**권장 플로우 (agent 내):**
+1. `run_de_pipeline(dry_run=True)` → jobs 목록 사용자에게 표시
+2. 사용자 승인 후 `run_de_pipeline(dry_run=False, background=True)` → 백그라운드 실행
+
+#### `monitor_de_pipeline(de_config_file=None, de_pipeline_dir=None)`
+실행 중인 DE 파이프라인 진행상황 확인. STAR 로그 없어 `monitor_pipeline()`보다 단순.
+
+**동작:**
+- `_find_snakemake_log()` 재사용: `logs/snakemake_<stem>.log` → `.snakemake/log/` 순서로 탐색
+- `_parse_snakemake_log()` 재사용: progress_pct, current_rule, error_rules, is_complete
+- PID 파일 확인 (`os.kill(pid, 0)`): 프로세스 생존 여부로 running/completed/failed 판정
+- 로그 마지막 20줄 `last_lines`로 반환 (에러 디버깅용)
+
+**반환값:**
+```python
+{
+    "status": "running"|"completed"|"failed"|"not_started",
+    "progress_pct": float,
+    "jobs_done": int,
+    "jobs_total": int,
+    "current_rule": str,
+    "error_rules": [...],
+    "log_file": str,
+    "pid": int | None,
+    "last_lines": str  # 최근 20줄
+}
+```
+
+### Testing Results (Phase 10)
+
+| Test | Result |
+|------|--------|
+| `run_de_pipeline(dry_run=True)` mouse-h2o2-astrocyte-2026 | ✅ `dry_run_ok`, 172 jobs, 16 rules 정상 파싱 |
+| Tool schema `run_de_pipeline` in `_define_tools` | ✅ 확인 |
+| Tool schema `monitor_de_pipeline` in `_define_tools` | ✅ 확인 |
+| Session auto-resolve (`current_de_config`) | ✅ `run_bridge` 성공 시 자동 저장 |
+
+**dry-run 상세** (4 pairwise comparisons, 16 samples):
+```
+run_pairwise_de: 4 / go_enrichment: 36 / kegg_enrichment: 12
+generate_go_summary_table: 4 / go_barplots: 4
+generate_pairwise_qc_plots: 4 / generate_pairwise_volcano: 4
+generate_global_pca: 1 / generate_global_qc_plots: 1
+aggregate_seqviewer: 1 / export_seqviewer_pair: 4
+enrichment_done: 4 / run_omnibus_test: 1 / all: 1
+total: 172 jobs
+```
+
+### Also Added in Phase 10 (earlier this session)
+
+| Tool | Description |
+|------|-------------|
+| `validate_de_config_conditions` | DE config `pairwise_comparisons` 조건명 검증 (metadata 대비). 대소문자 차이, 알파벳 순서 오류 자동 감지 |
+| `apply_de_config_corrections` | 검증 결과의 `suggestions`를 DE config YAML에 자동 적용 |
+| `check_analysis_readiness` | DE 실행 전 5-point 사전 점검 (파일, 샘플 ID, 조건명, n per condition, zero-count %) |
+| `read_de_results_summary` | `final_de_results.csv` + GO BP CSV 파싱 → DEG 수, 상위 유전자, GO 결과 요약 (인지 도구) |
+
+### Bugs Fixed in Phase 10
+
+| Bug | Fix |
+|-----|-----|
+| `run_pairwise_de` 조건명 불일치 (`1D`/`3D` vs `D1`/`D3`, `control` vs `Control`) | `validate_de_config_conditions` + `apply_de_config_corrections` 구현. `run_bridge` 후 자동 검증 |
+| `generate_go_summary_table` KEGG 빈 CSV 오류 (`""` 내용) | `05_generate_go_table.R`: `readLines()` pre-check 추가 (GO와 동일 패턴) |
+| Agent가 "DE 결과 요약해줘"에 `compare_conditions` 호출 | `required: []` 적용 + `current_de_config` 세션 저장 + system prompt CRITICAL TOOL ROUTING 추가 |
+| `create_sample_sheet` overwrite 문제 (사용자 수동 편집 덮어쓰기) | `overwrite=False` 기본값으로 변경 |
+
+---
+
+## New Tools to Add (Archived — originally planned)
 
 ### 1. `create_project_config()`
 **Purpose**: Generate config.yaml from natural language  
@@ -454,12 +614,12 @@ def monitor_pipeline(project_id):
 
 ## Next Steps
 
-1. **Phase 6 완료**: 현재 agent 테스트
-2. **Phase 7**: Production 배포 가이드
-3. **Phase 8A 구현**: 위의 Essential tools 추가
-4. **Phase 8B 테스트**: Small dataset으로 전체 워크플로우
-5. **Phase 9**: 데이터 타입 감지 (ATAC-seq, WGS 확장)
-6. **Phase 10**: Unified agent 통합
+1. ✅ **Phase 6**: QC 분석 agent 완료
+2. ✅ **Phase 8A**: create_project_config, detect_fastq_files, validate_input_data, run_pipeline
+3. ✅ **Phase 8B**: monitor_pipeline, create_sample_sheet, estimate_resources
+4. ✅ **Phase 9**: validate_library_type, setup_and_validate (RSeQC 라이브러리 검증)
+5. ✅ **Phase 10**: run_de_pipeline, monitor_de_pipeline + DE 인지 도구 (조건 검증, 결과 요약)
+6. **Phase 11**: ATAC-seq / WGS 지원 확장 (read_distribution 기반 자동 감지)
 
 ---
 

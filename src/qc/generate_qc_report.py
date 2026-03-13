@@ -24,7 +24,12 @@ try:
     RESULTS_DIR = snakemake.params.get('results_dir')
     DATA_DIR = snakemake.params.get('data_dir')
     BASE_DIR = DATA_DIR  # data_dir이 base directory
-    
+    TRIMMED_DIR = snakemake.params.get('trimmed_dir', os.path.join(RESULTS_DIR, 'trimmed'))
+    ALIGNED_DIR = snakemake.params.get('aligned_dir', os.path.join(RESULTS_DIR, 'aligned'))
+    COUNTS_DIR  = snakemake.params.get('counts_dir', os.path.join(RESULTS_DIR, 'counts'))
+    RAW_FILES   = snakemake.params.get('raw_files', {})
+    PIPELINE_QC_JSON = str(snakemake.input.pipeline_qc_json)
+
 except NameError:
     # 직접 실행 모드
     TOP_GENES = 10
@@ -35,15 +40,21 @@ except NameError:
     BASE_DIR = '.'
     LOGS_DIR = 'logs'
     DATA_DIR = 'data'
+    TRIMMED_DIR = os.path.join(RESULTS_DIR, 'trimmed')
+    ALIGNED_DIR = os.path.join(RESULTS_DIR, 'aligned')
+    COUNTS_DIR  = os.path.join(RESULTS_DIR, 'counts')
+    RAW_FILES   = {}
+    PIPELINE_QC_JSON = None
 
 def get_sample_names():
     """trimmed 폴더에서 샘플 이름 추출"""
     samples = set()
-    trimmed_dir = os.path.join(RESULTS_DIR, 'trimmed')
-    pattern = os.path.join(trimmed_dir, '*_1.fastq.gz')
+    pattern = os.path.join(TRIMMED_DIR, '*_1.fastq.gz')
     for f in glob.glob(pattern):
         sample = os.path.basename(f).replace('_1.fastq.gz', '')
         samples.add(sample)
+    if not samples:
+        print(f"❌ No samples found in {TRIMMED_DIR}")
     return sorted(samples)
 
 def parse_cutadapt_log(sample):
@@ -78,7 +89,7 @@ def parse_cutadapt_log(sample):
 
 def parse_star_log(sample):
     """STAR Log.final.out 파싱"""
-    log_file = os.path.join(RESULTS_DIR, 'aligned', sample, 'Log.final.out')
+    log_file = os.path.join(ALIGNED_DIR, sample, 'Log.final.out')
     if not os.path.exists(log_file):
         return None
     
@@ -193,6 +204,135 @@ def analyze_count_matrix():
         samples_data[sample]['high_expression'] = samples_data[sample]['high_expression'][:TOP_GENES]
     
     return {'samples': samples_data, 'gene_stats': gene_stats}
+
+def _render_pipeline_qc_section(json_path):
+    """Pipeline QC evaluation JSON을 읽어 HTML 섹션으로 렌더링 (English)."""
+    import json as _json
+
+    if not json_path or not os.path.exists(json_path):
+        return ""
+
+    try:
+        with open(json_path, encoding='utf-8') as f:
+            data = _json.load(f)
+    except Exception:
+        return ""
+
+    samples = data.get('samples', [])
+    thresholds = data.get('thresholds', {})
+    if not samples:
+        return ""
+
+    status_color = {'PASS': '#10b981', 'WARN': '#f59e0b', 'FAIL': '#ef4444'}
+    status_bg    = {'PASS': '#d1fae5', 'WARN': '#fef3c7', 'FAIL': '#fee2e2'}
+    status_icon  = {'PASS': '✅', 'WARN': '⚠️', 'FAIL': '❌'}
+
+    counts = {'PASS': 0, 'WARN': 0, 'FAIL': 0}
+    for s in samples:
+        counts[s['status']] = counts.get(s['status'], 0) + 1
+
+    html = """
+            <!-- Pipeline QC Evaluation Summary -->
+            <div class="section">
+                <h2 class="section-title">🔬 Pipeline QC Evaluation Summary</h2>
+                <p style="color:#555; margin-bottom:16px;">
+                    Per-sample judgment based on Cutadapt, STAR, and featureCounts metrics.
+                </p>
+"""
+
+    # Summary cards
+    html += f"""
+                <div class="summary-grid" style="grid-template-columns: repeat(3, 1fr); max-width:600px; margin-bottom:24px;">
+                    <div class="summary-card" style="background:{status_bg['PASS']};">
+                        <h3 style="color:{status_color['PASS']};">PASS</h3>
+                        <div class="value" style="color:{status_color['PASS']};">{counts['PASS']}</div>
+                        <div class="sub-value">Ready for DE analysis</div>
+                    </div>
+                    <div class="summary-card" style="background:{status_bg['WARN']};">
+                        <h3 style="color:{status_color['WARN']};">WARN</h3>
+                        <div class="value" style="color:{status_color['WARN']};">{counts['WARN']}</div>
+                        <div class="sub-value">Proceed with caution</div>
+                    </div>
+                    <div class="summary-card" style="background:{status_bg['FAIL']};">
+                        <h3 style="color:{status_color['FAIL']};">FAIL</h3>
+                        <div class="value" style="color:{status_color['FAIL']};">{counts['FAIL']}</div>
+                        <div class="sub-value">Review before analysis</div>
+                    </div>
+                </div>
+"""
+
+    # Thresholds note
+    html += f"""
+                <details style="margin-bottom:16px; background:#f9fafb; padding:12px; border-radius:8px;">
+                    <summary style="cursor:pointer; font-weight:600; color:#667eea;">Applied Thresholds</summary>
+                    <ul style="margin-top:8px; color:#555; font-size:0.9em;">
+                        <li>Cutadapt too-short: WARN ≥ {thresholds.get('cutadapt_too_short_warn',2)}% / FAIL ≥ {thresholds.get('cutadapt_too_short_fail',5)}%</li>
+                        <li>STAR uniquely mapped: WARN &lt; {thresholds.get('min_uniquely_mapped_pct_warn',75)}% / FAIL &lt; {thresholds.get('min_uniquely_mapped_pct_fail',70)}%</li>
+                        <li>STAR unmapped (too short): WARN &gt; {thresholds.get('max_unmapped_short_warn',13)}% / FAIL &gt; {thresholds.get('max_unmapped_short_fail',17)}%</li>
+                        <li>STAR mismatch rate: WARN &gt; {thresholds.get('max_mismatch_rate_warn',1.5)}% / FAIL &gt; {thresholds.get('max_mismatch_rate_fail',2)}%</li>
+                        <li>featureCounts assigned: WARN &lt; {thresholds.get('min_assignment_rate_warn',50)}% / FAIL &lt; {thresholds.get('min_assignment_rate_fail',30)}%</li>
+                    </ul>
+                </details>
+"""
+
+    # Per-sample table
+    html += """
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Sample</th>
+                            <th>Status</th>
+                            <th>Cutadapt<br>too-short</th>
+                            <th>STAR<br>unique %</th>
+                            <th>STAR<br>unmapped %</th>
+                            <th>STAR<br>mismatch %</th>
+                            <th>featureCounts<br>assigned %</th>
+                            <th>Issues / Warnings</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+"""
+    for s in sorted(samples, key=lambda x: (x['status'] != 'FAIL', x['status'] != 'WARN', x['sample'])):
+        m = s.get('metrics', {})
+        bg = status_bg[s['status']]
+        color = status_color[s['status']]
+        icon = status_icon[s['status']]
+
+        def fmt(key, fmt_str='{:.1f}%'):
+            v = m.get(key)
+            return fmt_str.format(v) if v is not None else 'N/A'
+
+        notes = []
+        for iss in s.get('issues', []):
+            notes.append(f'<span style="color:{status_color["FAIL"]}; font-size:0.85em;">● {iss}</span>')
+        for w in s.get('warnings', []):
+            notes.append(f'<span style="color:{status_color["WARN"]}; font-size:0.85em;">○ {w}</span>')
+        notes_html = '<br>'.join(notes) if notes else '—'
+
+        html += f"""
+                        <tr style="background:{bg}20;">
+                            <td><strong>{s['sample']}</strong></td>
+                            <td style="text-align:center;">
+                                <span style="background:{bg}; color:{color}; padding:3px 10px; border-radius:10px; font-weight:600; font-size:0.85em;">
+                                    {icon} {s['status']}
+                                </span>
+                            </td>
+                            <td style="text-align:right;">{fmt('cutadapt_too_short_pct')}</td>
+                            <td style="text-align:right;">{fmt('star_unique_mapped_pct', '{:.2f}%')}</td>
+                            <td style="text-align:right;">{fmt('star_unmapped_short_pct', '{:.2f}%')}</td>
+                            <td style="text-align:right;">{fmt('star_mismatch_rate', '{:.2f}%')}</td>
+                            <td style="text-align:right;">{fmt('featurecounts_assignment_pct')}</td>
+                            <td style="font-size:0.85em; line-height:1.6;">{notes_html}</td>
+                        </tr>
+"""
+
+    html += """
+                    </tbody>
+                </table>
+            </div>
+"""
+    return html
+
 
 def get_file_size(filepath):
     """파일 크기를 읽기 쉬운 형식으로 변환"""
@@ -738,12 +878,12 @@ def generate_html_report(samples):
 """
     
     for sample in samples:
-        raw_r1 = os.path.join(BASE_DIR, 'raw', f'{sample}_1.fastq.gz')
-        raw_r2 = os.path.join(BASE_DIR, 'raw', f'{sample}_2.fastq.gz')
-        trimmed_r1 = os.path.join(RESULTS_DIR, 'trimmed', f'{sample}_1.fastq.gz')
-        trimmed_r2 = os.path.join(RESULTS_DIR, 'trimmed', f'{sample}_2.fastq.gz')
-        bam = os.path.join(RESULTS_DIR, 'aligned', sample, 'Aligned.sortedByCoord.out.bam')
-        
+        raw_r1 = RAW_FILES.get(sample, {}).get('r1', '')
+        raw_r2 = RAW_FILES.get(sample, {}).get('r2', '')
+        trimmed_r1 = os.path.join(TRIMMED_DIR, f'{sample}_1.fastq.gz')
+        trimmed_r2 = os.path.join(TRIMMED_DIR, f'{sample}_2.fastq.gz')
+        bam = os.path.join(ALIGNED_DIR, sample, 'Aligned.sortedByCoord.out.bam')
+
         html += f"""
                         <tr>
                             <td><strong>{sample}</strong></td>
@@ -754,8 +894,8 @@ def generate_html_report(samples):
                             <td>{get_file_size(bam)}</td>
                         </tr>
 """
-    
-    counts_matrix = os.path.join(RESULTS_DIR, 'counts', 'counts_matrix.txt')
+
+    counts_matrix = os.path.join(COUNTS_DIR, 'counts_matrix.txt')
     html += f"""
                     </tbody>
                 </table>
@@ -763,8 +903,14 @@ def generate_html_report(samples):
                     <strong>Count Matrix:</strong> {get_file_size(counts_matrix)}
                 </div>
             </div>
+"""
+
+    # ── Pipeline QC Evaluation Summary (English) ──────────────────
+    html += _render_pipeline_qc_section(PIPELINE_QC_JSON)
+
+    html += f"""
         </div>
-        
+
         <div class="footer">
             <p>Generated by RNA-seq Pipeline QC Report Generator</p>
             <p>Pipeline Version: 1.0 | Report Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>

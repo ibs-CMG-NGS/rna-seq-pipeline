@@ -10,6 +10,7 @@ Tools to enable full pipeline execution from raw FASTQ files:
 """
 
 import json
+import sys
 import yaml
 from pathlib import Path
 from typing import Dict, List, Any, Optional
@@ -87,8 +88,15 @@ def create_project_config(
         }
         sp = _species_defaults.get(species.lower(), _species_defaults["human"])
 
-        base_results = str(Path(results_dir).resolve())
-        project_results = str(Path(results_dir).resolve() / project_id)
+        # Avoid double-appending project_id when the user already included it
+        # e.g. results_dir="/results/my-project" + project_id="my-project"
+        _rp = Path(results_dir).resolve()
+        if _rp.name == project_id:
+            project_results = str(_rp)
+            base_results = str(_rp.parent)
+        else:
+            project_results = str(_rp / project_id)
+            base_results = str(_rp)
 
         config = {
             # ── Project ───────────────────────────────────────────────────
@@ -242,21 +250,28 @@ def detect_fastq_files(
                 "message": f"Directory not found: {data_dir}"
             }
         
-        # Find all FASTQ files
+        # Find all FASTQ files — search recursively into subdirectories.
+        # is_file() is REQUIRED: directories can be named *.fastq in per-sample dir layouts
+        # (e.g. SampleName_R1_001.fastq/ containing SampleName_R1_001.fastq).
         fastq_files = []
         for ext in ['*.fastq.gz', '*.fq.gz', '*.fastq', '*.fq']:
-            fastq_files.extend(data_path.glob(ext))
-        
+            fastq_files.extend(f for f in data_path.rglob(ext) if f.is_file())
+
         if not fastq_files:
             return {
                 "status": "error",
-                "message": f"No FASTQ files found in {data_dir}"
+                "message": f"No FASTQ files found in {data_dir} (searched recursively)"
             }
         
+        # Check if files span multiple subdirectories
+        subdirs = set(fq.parent for fq in fastq_files)
+        has_subdirs = len(subdirs) > 1 or (len(subdirs) == 1 and next(iter(subdirs)) != data_path)
+
         # Group by sample
         samples = {}
         read_type = "single-end"
-        
+        name_conflicts = []  # track sample_ids where files from different dirs collide
+
         for fq in fastq_files:
             # Strip known double extensions without corrupting sample names
             # (using Path.stem removes only one suffix, e.g. .gz from .fastq.gz)
@@ -278,10 +293,13 @@ def detect_fastq_files(
                 # Single-end
                 sample_id = name
                 read_num = 'R1'
-            
+
             if sample_id not in samples:
                 samples[sample_id] = {}
-            
+            elif read_num in samples[sample_id]:
+                # Duplicate sample_id from a different subdirectory — flag it
+                name_conflicts.append(f"{sample_id} ({fq} vs {samples[sample_id][read_num]})")
+
             samples[sample_id][read_num] = str(fq)
         
         # Calculate sizes and build result
@@ -305,6 +323,18 @@ def detect_fastq_files(
             
             sample_list.append(sample_info)
         
+        warnings = []
+        if has_subdirs:
+            warnings.append(
+                f"Files found across {len(subdirs)} subdirectories — "
+                "sample sheet mode (use_sample_sheet: true) is recommended."
+            )
+        if name_conflicts:
+            warnings.append(
+                f"Duplicate sample names from different subdirectories: {name_conflicts[:3]}"
+                + (" ..." if len(name_conflicts) > 3 else "")
+            )
+
         return {
             "status": "success",
             "total_files": len(fastq_files),
@@ -312,7 +342,9 @@ def detect_fastq_files(
             "total_samples": len(sample_list),
             "read_type": read_type,
             "total_size_gb": round(total_size, 2),
-            "data_dir": str(data_path)
+            "data_dir": str(data_path),
+            "has_subdirs": has_subdirs,
+            "warnings": warnings,
         }
     
     except Exception as e:
@@ -528,9 +560,25 @@ def run_pipeline(
             # Fallback: use current working directory
             pipeline_root = Path.cwd()
 
+        # Resolve snakemake binary. Try multiple locations in priority order:
+        # 1. Same conda env as running Python (agent started with correct env)
+        # 2. CONDA_PREFIX env var (conda env is activated)
+        # 3. Known rna-seq-pipeline conda env (server-specific fallback)
+        # 4. System PATH
+        import shutil
+        _snakemake_candidates = [
+            Path(sys.executable).parent / "snakemake",
+            Path(os.environ.get("CONDA_PREFIX", "/nonexistent")) / "bin" / "snakemake",
+            Path("/home/ygkim/program/anaconda3/envs/rna-seq-pipeline/bin/snakemake"),
+        ]
+        snakemake_cmd = next(
+            (str(p) for p in _snakemake_candidates if p.exists()),
+            shutil.which("snakemake") or "snakemake",
+        )
+
         # Use absolute path for config so it works from any cwd
         cmd = [
-            "snakemake",
+            snakemake_cmd,
             "--configfile", str(config_path.resolve()),
             "--cores", str(cores)
         ]
@@ -975,9 +1023,13 @@ def create_sample_sheet(
     data_dir: str,
     conditions: Optional[Dict[str, List[str]]] = None,
     output_path: Optional[str] = None,
+    overwrite: bool = True,
 ) -> Dict[str, Any]:
     """
     Generate a sample metadata TSV from detected FASTQ files.
+
+    If `overwrite=False` and the TSV already exists, returns its current content
+    without regenerating (preserves manually revised conditions).
 
     If `conditions` is provided, each key is a condition name and each value
     is a list of sample_id substrings to match (case-insensitive prefix/substr).
@@ -993,6 +1045,24 @@ def create_sample_sheet(
         }
     """
     try:
+        tsv_path = output_path or f"config/samples/{project_id}.tsv"
+
+        # If overwrite=False and file already exists, return existing content
+        if not overwrite and Path(tsv_path).exists():
+            import pandas as _pd
+            existing = _pd.read_csv(tsv_path, sep='\t')
+            conds = existing['condition'].unique().tolist() if 'condition' in existing.columns else []
+            n = len(existing)
+            return {
+                "status": "success",
+                "tsv_path": str(tsv_path),
+                "n_samples": n,
+                "conditions_assigned": {c: int((existing['condition'] == c).sum()) for c in conds},
+                "unassigned": [],
+                "skipped": True,
+                "message": f"Sample sheet already exists ({n} samples, conditions: {conds}). Skipped regeneration to preserve manual edits.",
+            }
+
         # Detect FASTQ files
         fq_result = detect_fastq_files(data_dir)
         if fq_result['status'] != 'success':
@@ -1012,19 +1082,30 @@ def create_sample_sheet(
                             cond_map[sid] = cond_name
                             break
         else:
-            # Auto-infer: match common suffixes only (endswith, not substring).
-            # Substring matching is intentionally avoided — too many false positives
-            # (e.g. _T_ would match batch_T_rep1, _H would match sample_H_treated).
-            # Users should pass explicit `conditions` for non-standard naming.
-            auto_patterns = {
+            # Auto-infer from sample name patterns.
+            # Priority: longer/more-specific prefixes first to avoid partial matches
+            # (e.g. "nMonTg" must match before "MonTg").
+            # suffix_patterns: exact suffix match (e.g. _WT, _Ctrl)
+            # prefix_patterns: prefix match on the basename before first digit/_S
+            suffix_patterns = {
                 'wildtype':      ['_W', '_WT', '_wt', '_wildtype', '_Ctrl', '_ctrl', '_control'],
                 'heterozygous':  ['_H', '_Het', '_het', '_heterozygous', '_KO', '_ko'],
                 'treatment':     ['_T', '_Treat', '_treat', '_treatment'],
             }
+            # Prefix patterns — ordered longest-first to prevent shorter prefixes
+            # from shadowing more-specific ones (nMonTg must beat MonTg).
+            prefix_patterns = [
+                ('non_stimulated', ['nMonTg', 'nTg', 'NonTg', 'non_tg']),
+                ('wildtype',       ['WT', 'Wt', 'Wild', 'Ctrl', 'Control', 'MonWT']),
+                ('transgenic',     ['MonTg', 'Tg', 'TG']),
+                ('heterozygous',   ['Het', 'HET', 'KO', 'ko']),
+                ('treatment',      ['Treat', 'treat', 'STIM', 'Stim']),
+            ]
             for sample in samples:
                 sid = sample['sample_id']
-                for cond_name, pats in auto_patterns.items():
-                    matched = False
+                matched = False
+                # 1. Try suffix patterns (exact)
+                for cond_name, pats in suffix_patterns.items():
                     for p in pats:
                         if sid.endswith(p):
                             cond_map[sid] = cond_name
@@ -1032,9 +1113,18 @@ def create_sample_sheet(
                             break
                     if matched:
                         break
+                # 2. Try prefix patterns if suffix didn't match
+                if not matched:
+                    for cond_name, pats in prefix_patterns:
+                        for p in pats:
+                            if sid.startswith(p):
+                                cond_map[sid] = cond_name
+                                matched = True
+                                break
+                        if matched:
+                            break
 
         # Build TSV rows
-        tsv_path = output_path or f"config/samples/{project_id}.tsv"
         Path(tsv_path).parent.mkdir(parents=True, exist_ok=True)
 
         # Auto-assign replicate numbers: within each condition, rank by sample_id
@@ -1407,6 +1497,39 @@ def read_qc_results(config_file: str) -> Dict[str, Any]:
 
         result: Dict[str, Any] = {"status": "success", "project_dir": str(project_dir)}
 
+        # 0. Pipeline QC Evaluation — comprehensive PASS/WARN/FAIL per sample
+        pipeline_qc_json = summary_dir / "pipeline_qc_evaluation.json"
+        if pipeline_qc_json.exists():
+            with open(pipeline_qc_json) as f:
+                pqc = json.load(f)
+            samples = pqc.get("samples", [])
+            n_pass = sum(1 for s in samples if s["status"] == "PASS")
+            n_warn = sum(1 for s in samples if s["status"] == "WARN")
+            n_fail = sum(1 for s in samples if s["status"] == "FAIL")
+            result["pipeline_qc"] = {
+                "total_samples": len(samples),
+                "passed": n_pass,
+                "warned": n_warn,
+                "failed": n_fail,
+                "pass_rate": round(n_pass / len(samples) * 100, 1) if samples else 0,
+                "thresholds": pqc.get("thresholds", {}),
+                "per_sample": [
+                    {
+                        "sample": s["sample"],
+                        "status": s["status"],
+                        "recommendation": s.get("recommendation", ""),
+                        "metrics": s.get("metrics", {}),
+                        "issues": s.get("issues", []),
+                        "warnings": s.get("warnings", []),
+                    }
+                    for s in samples
+                ],
+                "failed_samples": [s["sample"] for s in samples if s["status"] == "FAIL"],
+                "warned_samples": [s["sample"] for s in samples if s["status"] == "WARN"],
+            }
+        else:
+            result["pipeline_qc"] = None
+
         # 1. FastQC evaluation — parse multiqc_fastqc.txt (fastqc_evaluation.json is not generated)
         mqc_fastqc = summary_dir / "multiqc_report_data" / "multiqc_fastqc.txt"
         if not mqc_fastqc.exists():
@@ -1523,7 +1646,14 @@ def read_qc_results(config_file: str) -> Dict[str, Any]:
                         n_fail_files += 1
         n_fastqc_files = n_pass_files + n_fail_files
 
+        pqc = result.get("pipeline_qc") or {}
         result["summary"] = {
+            "pipeline_qc_total": pqc.get("total_samples"),
+            "pipeline_qc_passed": pqc.get("passed"),
+            "pipeline_qc_warned": pqc.get("warned"),
+            "pipeline_qc_failed": pqc.get("failed"),
+            "pipeline_qc_pass_rate": f"{pqc.get('pass_rate', 'N/A')}%",
+            "pipeline_qc_failed_samples": pqc.get("failed_samples", []),
             "fastqc_files_evaluated": n_fastqc_files,
             "fastqc_critical_pass": n_pass_files,
             "fastqc_critical_fail": n_fail_files,
@@ -1739,6 +1869,7 @@ def run_bridge(
     de_pipeline_dir: str,
     skip_de: bool = True,
     dry_run: bool = False,
+    exclude_samples: List[str] = None,
 ) -> Dict[str, Any]:
     """
     Transfer RNA-seq counts matrix to DE/GO analysis pipeline.
@@ -1822,9 +1953,10 @@ def run_bridge(
                     "counts_relpath",
                     "project_summary/counts/counts_matrix_clean.csv"
                 ),
-                "species": cfg.get("species"),  # pass through from RNA-seq config
+                "species": cfg.get("species"),
             },
-            assume_yes=True,  # non-interactive
+            assume_yes=True,
+            exclude_samples=exclude_samples or [],
         )
 
         # Step 1: check completion
@@ -1849,11 +1981,13 @@ def run_bridge(
                 "project_summary/counts/counts_matrix_clean.csv"
             )
             counts_file = rnaseq_output / counts_relpath
+            excl_note = f", excluding {exclude_samples}" if exclude_samples else ""
             result["message"] = (
-                f"DRY RUN — would copy {counts_file} to {de_pipeline}/data/raw/, "
+                f"DRY RUN — would copy {counts_file} to {de_pipeline}/data/raw/{excl_note}, "
                 f"generate metadata and DE config for project '{project_id}'."
             )
             result["counts_exists"] = counts_file.exists()
+            result["excluded_samples"] = exclude_samples or []
             return result
 
         # Step 2: copy counts
@@ -1890,3 +2024,1454 @@ def run_bridge(
     except Exception as e:
         import traceback
         return {"status": "error", "message": str(e), "traceback": traceback.format_exc()}
+
+
+def get_pipeline_status(
+    config_file: Optional[str] = None,
+    data_dir: Optional[str] = None,
+    results_dir: Optional[str] = None,
+    de_pipeline_dir: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    파일시스템을 읽어 RNA-seq → DE/GO → seqviewer 파이프라인의 현재 진행 상태를 추론한다.
+
+    별도 done flag를 새로 만들지 않고 기존 결과물(config, sample_sheet, counts matrix,
+    final_de_results.csv, .seqviewer_done.flag 등)의 존재 여부로 각 단계 완료를 판단한다.
+
+    Args:
+        config_file:     RNA-seq 프로젝트 config YAML 경로 (optional)
+        data_dir:        FASTQ 원본 디렉터리 경로 (optional)
+        results_dir:     RNA-seq 결과 출력 디렉터리 (optional; config에서 자동 파싱)
+        de_pipeline_dir: DE/GO 분석 파이프라인 루트 경로 (optional)
+
+    Returns:
+        {
+          "project_id": str | None,
+          "steps": {step_id: {"label": str, "done": bool}},
+          "completed": [step_id, ...],
+          "next_step": step_id | None,
+          "next_suggestion": str,
+          "summary": str   # 예: "5/8 단계 완료 ■■■■■□□□"
+        }
+    """
+    # ── 1. config 파싱으로 경로 보완 ──────────────────────────────
+    project_id = None
+    sample_sheet_path = None
+    config_path_obj = Path(config_file) if config_file else None
+
+    # pipeline root = /data_3tb/shared/rna-seq-pipeline  (scripts/utils/ → 2 levels up)
+    pipeline_root = Path(__file__).parent.parent.parent
+
+    if config_path_obj and config_path_obj.exists():
+        try:
+            import yaml as _yaml
+            cfg = _yaml.safe_load(config_path_obj.read_text())
+            project_id = cfg.get("project_id")
+            if not results_dir:
+                results_dir = cfg.get("results_dir") or cfg.get("base_results_dir")
+            # data_dir: config의 data_dir 필드에서 파싱 (파라미터 우선)
+            if not data_dir:
+                data_dir = cfg.get("data_dir")
+            # sample_sheet 경로: 상대 경로는 pipeline root 기준
+            ss_raw = cfg.get("sample_sheet")
+            if ss_raw:
+                ss_p = Path(ss_raw)
+                if not ss_p.is_absolute():
+                    ss_p = pipeline_root / ss_p
+                sample_sheet_path = ss_p
+        except Exception:
+            pass
+
+    results_dir_p = Path(results_dir) if results_dir else None
+    de_dir_p = Path(de_pipeline_dir) if de_pipeline_dir else None
+
+    # ── 2. 각 단계 판단 ───────────────────────────────────────────
+    def _has_fastq(d: Optional[Path]) -> bool:
+        if not d or not d.exists():
+            return False
+        return any(d.rglob("*.fastq.gz")) or any(d.rglob("*.fq.gz")) or \
+               any(d.rglob("*.fastq")) or any(d.rglob("*.fq"))
+
+    def _pipeline_started(pid: Optional[str]) -> bool:
+        """pipeline root의 logs/ 디렉터리에서 snakemake log 존재 여부 확인"""
+        logs_dir = pipeline_root / "logs"
+        if not logs_dir.exists():
+            return False
+        if pid:
+            return (logs_dir / f"snakemake_{pid}.log").exists()
+        return any(logs_dir.glob("snakemake_*.log"))
+
+    def _pipeline_done(res: Optional[Path]) -> bool:
+        """counts_matrix_clean.csv 존재 → RNA-seq 완료"""
+        if not res or not res.exists():
+            return False
+        return (res / "project_summary" / "counts" / "counts_matrix_clean.csv").exists()
+
+    def _de_prepared(de: Optional[Path], pid: Optional[str]) -> bool:
+        """DE pipeline data/raw/에 counts CSV 존재 → bridge 완료"""
+        if not de or not de.exists():
+            return False
+        raw = de / "data" / "raw"
+        if pid:
+            return (raw / f"{pid}_counts.csv").exists()
+        return any(raw.glob("*_counts.csv"))
+
+    def _de_done(de: Optional[Path], pid: Optional[str]) -> bool:
+        """pairwise/*/final_de_results.csv 존재 → DE 분석 완료"""
+        if not de or not de.exists():
+            return False
+        out = de / "output"
+        if pid:
+            out = out / pid
+        if not out.exists():
+            return False
+        return any(out.rglob("final_de_results.csv"))
+
+    def _seqviewer_done(de: Optional[Path], pid: Optional[str]) -> bool:
+        if not de or not de.exists():
+            return False
+        out = de / "output"
+        if pid:
+            out = out / pid
+        return (out / "seqviewer" / ".seqviewer_done.flag").exists()
+
+    data_dir_p = Path(data_dir) if data_dir else None
+
+    STEPS = [
+        ("fastq_detected",      "FASTQ 파일 탐지",         _has_fastq(data_dir_p)),
+        ("config_created",      "프로젝트 설정(config) 생성", bool(config_path_obj and config_path_obj.exists())),
+        ("sample_sheet_created","샘플시트 생성",             bool(sample_sheet_path and sample_sheet_path.exists())),
+        ("pipeline_started",    "RNA-seq 파이프라인 시작",   _pipeline_started(project_id)),
+        ("pipeline_done",       "RNA-seq 파이프라인 완료",   _pipeline_done(results_dir_p)),
+        ("de_prepared",         "DE 분석 준비 (bridge)",    _de_prepared(de_dir_p, project_id)),
+        ("de_done",             "DE/GO 분석 완료",           _de_done(de_dir_p, project_id)),
+        ("seqviewer_done",      "seqviewer 내보내기 완료",   _seqviewer_done(de_dir_p, project_id)),
+    ]
+
+    SUGGESTIONS = {
+        "fastq_detected":       "FASTQ 파일을 탐지하세요. (detect_fastq_files)",
+        "config_created":       "프로젝트 config를 생성하세요. (create_project_config)",
+        "sample_sheet_created": "샘플시트를 생성하세요. (create_sample_sheet)",
+        "pipeline_started":     "RNA-seq 파이프라인을 실행하세요. (run_pipeline)",
+        "pipeline_done":        "파이프라인 실행 중입니다. 완료를 기다리세요. (monitor_pipeline)",
+        "de_prepared":          "DE 분석 파이프라인으로 결과를 전달하세요. (run_bridge)",
+        "de_done":              "DE/GO 분석을 실행하세요. (DE pipeline Snakemake)",
+        "seqviewer_done":       "seqviewer export를 실행하세요. (DE pipeline seqviewer export)",
+    }
+
+    steps_dict = {sid: {"label": lbl, "done": done} for sid, lbl, done in STEPS}
+    completed = [sid for sid, _, done in STEPS if done]
+
+    # 첫 번째 미완료 단계 찾기
+    next_step = None
+    next_suggestion = "모든 단계가 완료되었습니다."
+    for sid, _, done in STEPS:
+        if not done:
+            next_step = sid
+            next_suggestion = SUGGESTIONS.get(sid, f"{sid} 단계를 진행하세요.")
+            break
+
+    n_done = len(completed)
+    n_total = len(STEPS)
+    bar = "■" * n_done + "□" * (n_total - n_done)
+    summary = f"{n_done}/{n_total} 단계 완료 [{bar}]"
+
+    return {
+        "project_id": project_id,
+        "steps": steps_dict,
+        "completed": completed,
+        "next_step": next_step,
+        "next_suggestion": next_suggestion,
+        "summary": summary,
+    }
+
+
+# ── RSeQC Library Validation ──────────────────────────────────────────────────
+
+def _gtf_to_bed12(gtf_path: str, bed_path: str) -> None:
+    """
+    Convert GTF annotation to BED12 format required by RSeQC.
+    Groups exons by transcript_id, outputs one BED12 line per transcript.
+    """
+    import re
+
+    def _attr(attrs: str, key: str) -> str:
+        m = re.search(rf'{key}\s+"([^"]+)"', attrs)
+        return m.group(1) if m else ""
+
+    # Collect exons grouped by transcript_id
+    transcripts: Dict[str, Dict] = {}
+    with open(gtf_path) as f:
+        for line in f:
+            if line.startswith("#"):
+                continue
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 9:
+                continue
+            feature = parts[2]
+            if feature not in ("exon", "transcript"):
+                continue
+            chrom, start, end, strand, attrs = (
+                parts[0], int(parts[3]) - 1, int(parts[4]), parts[6], parts[8]
+            )
+            tid = _attr(attrs, "transcript_id")
+            if not tid:
+                continue
+            if feature == "transcript":
+                transcripts.setdefault(tid, {"chrom": chrom, "start": start,
+                                             "end": end, "strand": strand,
+                                             "name": _attr(attrs, "gene_name") or tid,
+                                             "exons": []})
+                transcripts[tid].update({"chrom": chrom, "start": start,
+                                         "end": end, "strand": strand})
+            else:  # exon
+                transcripts.setdefault(tid, {"chrom": chrom, "start": start,
+                                             "end": end, "strand": strand,
+                                             "name": tid, "exons": []})
+                transcripts[tid]["exons"].append((start, end))
+
+    with open(bed_path, "w") as out:
+        for tid, tx in transcripts.items():
+            exons = sorted(tx["exons"])
+            if not exons:
+                continue
+            tx_start = tx["start"]
+            tx_end = tx["end"]
+            block_count = len(exons)
+            block_sizes = ",".join(str(e - s) for s, e in exons) + ","
+            block_starts = ",".join(str(s - tx_start) for s, e in exons) + ","
+            out.write(
+                f"{tx['chrom']}\t{tx_start}\t{tx_end}\t{tx['name']}\t0\t"
+                f"{tx['strand']}\t{tx_start}\t{tx_end}\t0\t"
+                f"{block_count}\t{block_sizes}\t{block_starts}\n"
+            )
+
+
+def validate_library_type(
+    config_file: str,
+    n_reads: int = 500_000,
+    cores: int = 8,
+    sample_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Pre-flight mRNA-seq library validation using RSeQC.
+
+    Steps:
+    1. Convert GTF → BED12 (cached at genome_dir/annotation_rseqc.bed)
+    2. Select first sample, subset first n_reads pairs from FASTQ
+    3. Run STAR alignment on the subset
+    4. Run infer_experiment.py → auto-detect strandedness
+    5. Run read_distribution.py → verify mRNA-seq (exon enrichment)
+    6. Update strandedness in config YAML if changed
+    7. Clean up temporary files
+
+    Returns:
+        {
+            "status": "success"|"warning"|"error",
+            "strandedness_detected": 0|1|2,
+            "strandedness_updated": bool,
+            "strandedness_before": int,
+            "library_type_verdict": "mRNA-seq"|"suspicious"|"likely_not_mRNA-seq",
+            "exon_pct": float,
+            "intergenic_pct": float,
+            "infer_experiment_raw": str,
+            "read_distribution_raw": str,
+            "warnings": [...],
+            "sample_used": str,
+            "bed_file": str,
+        }
+    """
+    import tempfile
+    import shutil as _shutil
+
+    warnings_list: List[str] = []
+
+    try:
+        # ── Load config ────────────────────────────────────────────────────
+        with open(config_file) as f:
+            cfg = yaml.safe_load(f)
+
+        annotation_gtf = cfg.get("annotation_gtf") or cfg.get("genes_gtf", "")
+        star_index     = cfg.get("star_index", "")
+        genome_dir     = cfg.get("genome_dir", "") or str(Path(star_index).parent)
+        strandedness_before = int(cfg.get("strandedness", 0))
+
+        if not annotation_gtf or not Path(annotation_gtf).exists():
+            return {"status": "error", "message": f"annotation_gtf not found: {annotation_gtf}"}
+        if not star_index or not Path(star_index).exists():
+            return {"status": "error", "message": f"star_index not found: {star_index}"}
+
+        # ── Resolve tool paths (same conda env as this Python) ─────────────
+        _conda_bin = Path(sys.executable).parent
+        def _tool(name: str) -> str:
+            p = _conda_bin / name
+            return str(p) if p.exists() else name
+
+        infer_exp_bin    = _tool("infer_experiment.py")
+        read_dist_bin    = _tool("read_distribution.py")
+        star_bin         = _tool("STAR")
+        samtools_bin     = _tool("samtools")
+
+        for bin_path, label in [
+            (infer_exp_bin, "infer_experiment.py"),
+            (read_dist_bin, "read_distribution.py"),
+            (star_bin, "STAR"),
+            (samtools_bin, "samtools"),
+        ]:
+            if not Path(bin_path).exists() and _shutil.which(bin_path) is None:
+                return {"status": "error",
+                        "message": f"{label} not found. Install RSeQC: conda install -c bioconda rseqc"}
+
+        # ── Step 1: GTF → BED12 (cache) ────────────────────────────────────
+        bed_file = str(Path(genome_dir) / "annotation_rseqc.bed")
+        if not Path(bed_file).exists():
+            print(f"[validate_library_type] Converting GTF → BED12: {bed_file}")
+            _gtf_to_bed12(annotation_gtf, bed_file)
+        else:
+            print(f"[validate_library_type] Using cached BED12: {bed_file}")
+
+        # ── Step 2: Select sample ──────────────────────────────────────────
+        # If sample_id is specified, find that sample; otherwise use first available.
+        sample_sheet = cfg.get("sample_sheet", "")
+        r1_path = r2_path = ""
+        selected_id = ""
+
+        if sample_sheet and Path(sample_sheet).exists():
+            import csv
+            with open(sample_sheet) as f:
+                reader = csv.DictReader(f, delimiter="\t")
+                rows = list(reader)
+            # Find target row: match sample_id if given, else use first valid row
+            for row in rows:
+                sid = row.get("sample_id", "")
+                if sample_id and sid != sample_id:
+                    continue
+                r1 = row.get("fastq_r1", "")
+                r2 = row.get("fastq_r2", "")
+                if r1 and Path(r1).exists():
+                    r1_path, r2_path, selected_id = r1, r2, sid
+                    break
+            if sample_id and not selected_id:
+                return {"status": "error",
+                        "message": f"sample_id '{sample_id}' not found in sample sheet or FASTQ missing"}
+        else:
+            fq_result = detect_fastq_files(cfg.get("data_dir", ""))
+            samples = fq_result.get("samples", [])
+            target = next((s for s in samples if not sample_id or s["sample_id"] == sample_id), None)
+            if not target:
+                return {"status": "error",
+                        "message": f"sample_id '{sample_id}' not found in data_dir"}
+            r1_path = target.get("R1", "")
+            r2_path = target.get("R2", "")
+            selected_id = target.get("sample_id", "sample1")
+
+        if not r1_path or not Path(r1_path).exists():
+            return {"status": "error", "message": f"Cannot find R1 FASTQ for validation (path: {r1_path})"}
+
+        print(f"[validate_library_type] Using sample: {selected_id}")
+
+        # ── Step 3: Subset FASTQ ────────────────────────────────────────────
+        tmp_dir = Path(tempfile.mkdtemp(prefix="rseqc_validate_"))
+        try:
+            n_lines = n_reads * 4  # 4 lines per FASTQ record
+            sub_r1 = str(tmp_dir / "subset_R1.fastq")
+            sub_r2 = str(tmp_dir / "subset_R2.fastq") if r2_path else None
+
+            def _subset_fastq(src: str, dst: str, n: int) -> None:
+                opener = "zcat" if src.endswith(".gz") else "cat"
+                subprocess.run(
+                    f"{opener} {src} | head -{n} > {dst}",
+                    shell=True, check=True
+                )
+
+            print(f"[validate_library_type] Subsetting {n_reads:,} reads...")
+            _subset_fastq(r1_path, sub_r1, n_lines)
+            if sub_r2:
+                _subset_fastq(r2_path, sub_r2, n_lines)
+
+            # ── Step 4: STAR alignment on subset ───────────────────────────
+            # STAR requires trailing slash in prefix to write files inside directory
+            star_out_dir = tmp_dir / "star_out"
+            star_out_dir.mkdir(parents=True, exist_ok=True)
+            star_out_prefix = str(star_out_dir) + "/"
+
+            star_cmd = [
+                star_bin,
+                "--runThreadN", str(cores),
+                "--genomeDir", star_index,
+                "--readFilesIn", sub_r1,
+                "--outSAMtype", "BAM", "SortedByCoordinate",
+                "--outFileNamePrefix", star_out_prefix,
+                "--outSAMattributes", "NH", "HI", "AS", "NM",
+                "--limitBAMsortRAM", "4000000000",
+            ]
+            if sub_r2:
+                star_cmd[star_cmd.index(sub_r1) + 1:star_cmd.index(sub_r1) + 1] = [sub_r2]
+
+            print(f"[validate_library_type] Running STAR on subset...")
+            star_result = subprocess.run(
+                star_cmd, capture_output=True, text=True, cwd=str(tmp_dir)
+            )
+            if star_result.returncode != 0:
+                return {
+                    "status": "error",
+                    "message": "STAR alignment failed",
+                    "stderr": star_result.stderr[-1000:],
+                }
+
+            bam_file = str(star_out_dir / "Aligned.sortedByCoord.out.bam")
+            subprocess.run([samtools_bin, "index", bam_file], check=True)
+
+            # ── Step 5: infer_experiment.py ────────────────────────────────
+            print(f"[validate_library_type] Running infer_experiment.py...")
+            infer_result = subprocess.run(
+                [infer_exp_bin, "-r", bed_file, "-i", bam_file],
+                capture_output=True, text=True
+            )
+            infer_raw = infer_result.stdout + infer_result.stderr
+
+            # Parse strandedness from output
+            # RSeQC outputs fractions for 1++,1--,2+-,2-+ patterns
+            frac_failed = frac_fwd = frac_rev = 0.0
+            for line in infer_raw.splitlines():
+                if "failed to determine" in line.lower():
+                    m = re.search(r"([\d.]+)$", line.strip())
+                    if m:
+                        frac_failed = float(m.group(1))
+                elif "1++,1--,2+-,2-+" in line:
+                    m = re.search(r"([\d.]+)$", line.strip())
+                    if m:
+                        frac_fwd = float(m.group(1))
+                elif "1+-,1-+,2++,2--" in line:
+                    m = re.search(r"([\d.]+)$", line.strip())
+                    if m:
+                        frac_rev = float(m.group(1))
+
+            if frac_failed > 0.75 or (frac_fwd < 0.6 and frac_rev < 0.6):
+                strandedness_detected = 0  # unstranded
+            elif frac_fwd >= 0.6:
+                strandedness_detected = 1  # forward
+            else:
+                strandedness_detected = 2  # reverse (e.g. TruSeq)
+
+            # ── Step 6: read_distribution.py ───────────────────────────────
+            print(f"[validate_library_type] Running read_distribution.py...")
+            dist_result = subprocess.run(
+                [read_dist_bin, "-r", bed_file, "-i", bam_file],
+                capture_output=True, text=True
+            )
+            dist_raw = dist_result.stdout + dist_result.stderr
+
+            # Parse exon/intergenic percentages
+            # Output format: Group  Total_bases  Tag_count  Tags/Kb
+            # Tag_count is column index 2 (0-based) after splitting by whitespace
+            total_tags = total_assigned = exon_tags = 0
+            for line in dist_raw.splitlines():
+                parts = line.split()
+                if "Total Tags" in line and len(parts) >= 3:
+                    total_tags = int(parts[2])
+                elif "Total Assigned Tags" in line and len(parts) >= 4:
+                    total_assigned = int(parts[3])
+                elif parts and parts[0] in ("CDS_Exons", "5'UTR_Exons", "3'UTR_Exons"):
+                    if len(parts) >= 3:
+                        exon_tags += int(parts[2])
+
+            # Intergenic = unassigned reads (not in any annotated region)
+            intergenic_tags = total_tags - total_assigned if total_tags > total_assigned else 0
+            exon_pct       = round(exon_tags / total_tags * 100, 1) if total_tags else 0.0
+            intergenic_pct = round(intergenic_tags / total_tags * 100, 1) if total_tags else 0.0
+
+            if exon_pct >= 60:
+                library_verdict = "mRNA-seq"
+            elif exon_pct >= 30:
+                library_verdict = "suspicious"
+                warnings_list.append(
+                    f"Exon coverage {exon_pct}% is lower than expected for mRNA-seq (≥60%). "
+                    "Could be pre-mRNA, low-quality, or ATAC-seq/WGS."
+                )
+            else:
+                library_verdict = "likely_not_mRNA-seq"
+                warnings_list.append(
+                    f"Exon coverage {exon_pct}% is very low — likely NOT mRNA-seq. "
+                    f"Intergenic: {intergenic_pct}%. Consider checking if data is ATAC-seq or WGS."
+                )
+
+            if intergenic_pct > 40:
+                warnings_list.append(
+                    f"Intergenic reads {intergenic_pct}% is high — possible ATAC-seq or contamination."
+                )
+
+            # ── Step 7: Update config if strandedness changed ──────────────
+            strandedness_updated = strandedness_detected != strandedness_before
+            if strandedness_updated:
+                with open(config_file) as f:
+                    config_text = f.read()
+                config_text = re.sub(
+                    r"^(strandedness:\s*)(\d+)",
+                    rf"\g<1>{strandedness_detected}",
+                    config_text,
+                    flags=re.MULTILINE,
+                )
+                with open(config_file, "w") as f:
+                    f.write(config_text)
+                warnings_list.append(
+                    f"strandedness updated: {strandedness_before} → {strandedness_detected} in {config_file}"
+                )
+
+        finally:
+            _shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        status = "warning" if warnings_list else "success"
+        return {
+            "status": status,
+            "strandedness_detected": strandedness_detected,
+            "strandedness_updated": strandedness_updated,
+            "strandedness_before": strandedness_before,
+            "library_type_verdict": library_verdict,
+            "exon_pct": exon_pct,
+            "intergenic_pct": intergenic_pct,
+            "infer_experiment_raw": infer_raw,
+            "read_distribution_raw": dist_raw,
+            "warnings": warnings_list,
+            "sample_used": selected_id,
+            "bed_file": bed_file,
+        }
+
+    except Exception as e:
+        return {"status": "error", "message": f"validate_library_type failed: {e}"}
+
+
+def validate_de_config_conditions(de_config_file: str) -> Dict[str, Any]:
+    """
+    Validate that pairwise_comparisons in a DE config YAML match the actual
+    condition values present in the referenced metadata CSV.
+
+    Detects two common mismatches:
+    - Case difference:          'control' vs 'Control'
+    - Alphanumeric order swap:  '1D' vs 'D1', '3D' vs 'D3'
+
+    Returns:
+        {
+            "status": "ok" | "mismatch" | "error",
+            "metadata_conditions": [str, ...],
+            "config_conditions":   [str, ...],
+            "mismatches":          [str, ...],   # in config but not in metadata
+            "suggestions":         {wrong: correct, ...},
+            "unresolved":          [str, ...],   # no automatic fix found
+            "message":             str
+        }
+    """
+    try:
+        import re as _re
+        import yaml as _yaml
+        import pandas as _pd
+
+        de_cfg_path = Path(de_config_file)
+        if not de_cfg_path.exists():
+            return {"status": "error", "message": f"DE config not found: {de_config_file}"}
+
+        with open(de_cfg_path) as f:
+            de_cfg = _yaml.safe_load(f)
+
+        # Resolve metadata path (relative to DE pipeline root = parent of configs/)
+        metadata_raw = de_cfg.get("metadata_path", "")
+        if not Path(metadata_raw).is_absolute():
+            metadata_path = de_cfg_path.parent.parent / metadata_raw
+        else:
+            metadata_path = Path(metadata_raw)
+
+        if not metadata_path.exists():
+            return {"status": "error", "message": f"Metadata not found: {metadata_path}"}
+
+        meta_df = _pd.read_csv(metadata_path)
+        cond_col = "condition" if "condition" in meta_df.columns else "group"
+        metadata_conditions = set(meta_df[cond_col].unique().tolist())
+
+        # Collect all condition names used in pairwise_comparisons
+        pairwise = de_cfg.get("de_analysis", {}).get("pairwise_comparisons", [])
+        config_conditions: set = set()
+        for pair in pairwise:
+            config_conditions.update(pair)
+
+        mismatches = config_conditions - metadata_conditions
+        if not mismatches:
+            return {
+                "status": "ok",
+                "metadata_conditions": sorted(metadata_conditions),
+                "config_conditions": sorted(config_conditions),
+                "mismatches": [],
+                "suggestions": {},
+                "unresolved": [],
+                "message": (
+                    f"✅ All conditions match.\n"
+                    f"  Metadata: {sorted(metadata_conditions)}\n"
+                    f"  Config:   {sorted(config_conditions)}"
+                ),
+            }
+
+        # Build suggestions for each mismatch
+        suggestions: Dict[str, str] = {}
+        for m in sorted(mismatches):
+            # 1. Case-insensitive exact match  (e.g., 'control' → 'Control')
+            ci = next((c for c in metadata_conditions if c.lower() == m.lower()), None)
+            if ci:
+                suggestions[m] = ci
+                continue
+            # 2. Alphanumeric order swap  (e.g., '1D' ↔ 'D1', '3D' ↔ 'D3')
+            nums  = "".join(_re.findall(r"\d+", m))
+            chars = "".join(_re.findall(r"[A-Za-z]+", m))
+            if nums and chars:
+                for cand in [chars + nums, nums + chars]:
+                    hit = next((c for c in metadata_conditions
+                                if c == cand or c.lower() == cand.lower()), None)
+                    if hit:
+                        suggestions[m] = hit
+                        break
+
+        unresolved = sorted(m for m in mismatches if m not in suggestions)
+
+        lines = ["⚠️  Condition mismatch in DE config:"]
+        lines.append(f"  Metadata conditions : {sorted(metadata_conditions)}")
+        lines.append(f"  Config conditions   : {sorted(config_conditions)}")
+        lines.append(f"  Mismatched (config) : {sorted(mismatches)}")
+        if suggestions:
+            lines.append("  Suggested corrections:")
+            for wrong, correct in sorted(suggestions.items()):
+                lines.append(f"    '{wrong}' → '{correct}'")
+        if unresolved:
+            lines.append(f"  Unresolved (manual fix needed): {unresolved}")
+
+        return {
+            "status": "mismatch",
+            "metadata_conditions": sorted(metadata_conditions),
+            "config_conditions": sorted(config_conditions),
+            "mismatches": sorted(mismatches),
+            "suggestions": suggestions,
+            "unresolved": unresolved,
+            "message": "\n".join(lines),
+        }
+
+    except Exception as e:
+        return {"status": "error", "message": f"validate_de_config_conditions failed: {e}"}
+
+
+def apply_de_config_corrections(
+    de_config_file: str,
+    corrections: Dict[str, str],
+) -> Dict[str, Any]:
+    """
+    Apply condition name corrections to pairwise_comparisons in a DE config YAML.
+
+    Args:
+        de_config_file: Path to the DE config YAML (will be updated in-place).
+        corrections:    {wrong_name: correct_name, ...}  — from validate_de_config_conditions.
+
+    Returns:
+        {"status": "success"|"error", "applied": {wrong: correct}, "message": str}
+    """
+    try:
+        import yaml as _yaml
+
+        de_cfg_path = Path(de_config_file)
+        if not de_cfg_path.exists():
+            return {"status": "error", "message": f"DE config not found: {de_config_file}"}
+
+        with open(de_cfg_path) as f:
+            content = f.read()
+            de_cfg = _yaml.safe_load(content)
+
+        pairwise = de_cfg.get("de_analysis", {}).get("pairwise_comparisons", [])
+        if not pairwise:
+            return {"status": "error", "message": "No pairwise_comparisons found in DE config."}
+
+        applied: Dict[str, str] = {}
+        new_pairwise = []
+        for pair in pairwise:
+            new_pair = []
+            for cond in pair:
+                if cond in corrections:
+                    new_pair.append(corrections[cond])
+                    applied[cond] = corrections[cond]
+                else:
+                    new_pair.append(cond)
+            new_pairwise.append(new_pair)
+
+        de_cfg["de_analysis"]["pairwise_comparisons"] = new_pairwise
+
+        with open(de_cfg_path, "w") as f:
+            _yaml.dump(de_cfg, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+        lines = [f"✅ DE config updated: {de_cfg_path.name}"]
+        for wrong, correct in sorted(applied.items()):
+            lines.append(f"  '{wrong}' → '{correct}'")
+        lines.append("Re-run DE pipeline to apply changes.")
+
+        return {
+            "status": "success",
+            "applied": applied,
+            "de_config_file": str(de_cfg_path),
+            "message": "\n".join(lines),
+        }
+
+    except Exception as e:
+        return {"status": "error", "message": f"apply_de_config_corrections failed: {e}"}
+
+
+def read_de_results_summary(
+    de_config_file: str,
+    pair: Optional[str] = None,
+    top_n: int = 10,
+) -> Dict[str, Any]:
+    """
+    DE 분석 결과 요약 — LLM이 해석할 수 있는 구조화된 데이터 반환.
+
+    각 pairwise comparison에 대해:
+    - 유의미한 유전자 수 (up / down / total)
+    - 상위 유전자 목록 (|log2FC| 기준, padj 포함)
+    - 상위 GO BP 경로 (up / down 각 최대 5개)
+    - 경고 (유전자 0개, n이 적은 그룹 등)
+
+    Args:
+        de_config_file: DE 파이프라인 config YAML 경로
+        pair:           특정 비교 pair만 조회 (예: "D1_vs_Control"). None이면 전체.
+        top_n:          상위 유전자 반환 수 (기본 10)
+
+    Returns:
+        {
+            "status": "success" | "partial" | "error",
+            "pairs": {
+                "D1_vs_Control": {
+                    "sig_total": int,
+                    "sig_up": int,
+                    "sig_down": int,
+                    "top_up_genes":   [{"gene": str, "log2FC": float, "padj": float}, ...],
+                    "top_down_genes": [{"gene": str, "log2FC": float, "padj": float}, ...],
+                    "top_go_up":   [{"term": str, "padj": float, "count": int}, ...],
+                    "top_go_down": [{"term": str, "padj": float, "count": int}, ...],
+                    "warnings": [str, ...]
+                }, ...
+            },
+            "summary_text": str,   # LLM이 직접 활용할 수 있는 한국어 요약
+            "not_found": [str, ...]  # 결과 파일이 없는 pair
+        }
+    """
+    try:
+        import yaml as _yaml
+        import pandas as _pd
+
+        de_cfg_path = Path(de_config_file)
+        if not de_cfg_path.exists():
+            return {"status": "error", "message": f"DE config not found: {de_config_file}"}
+
+        with open(de_cfg_path) as f:
+            de_cfg = _yaml.safe_load(f)
+
+        de_pipeline_dir = de_cfg_path.parent.parent
+        output_dir = de_pipeline_dir / de_cfg.get("output_dir", "output")
+        padj_cut  = de_cfg.get("de_analysis", {}).get("padj_cutoff",  0.05)
+        lfc_cut   = de_cfg.get("de_analysis", {}).get("log2fc_cutoff", 0.0)
+
+        pairwise = de_cfg.get("de_analysis", {}).get("pairwise_comparisons", [])
+        all_pairs = [f"{t}_vs_{b}" for t, b in pairwise]
+
+        if pair:
+            target_pairs = [pair]
+        else:
+            target_pairs = all_pairs
+
+        results: Dict[str, Any] = {}
+        not_found: List[str] = []
+
+        for p in target_pairs:
+            pair_dir  = output_dir / "pairwise" / p
+            de_file   = pair_dir / "final_de_results.csv"
+
+            if not de_file.exists():
+                not_found.append(p)
+                continue
+
+            de_df = _pd.read_csv(de_file, index_col=0)
+
+            # 유의미한 유전자 필터
+            sig = de_df.dropna(subset=["padj", "log2FoldChange"])
+            sig = sig[(sig["padj"] < padj_cut) & (sig["log2FoldChange"].abs() > lfc_cut)]
+            up   = sig[sig["log2FoldChange"] > 0]
+            down = sig[sig["log2FoldChange"] < 0]
+
+            gene_col = "symbol" if "symbol" in de_df.columns else de_df.index.name or "gene"
+
+            def _top_genes(df: "_pd.DataFrame", ascending: bool) -> List[Dict]:
+                sub = df.sort_values("log2FoldChange", ascending=ascending).head(top_n)
+                rows = []
+                for _, row in sub.iterrows():
+                    name = row.get("symbol", row.name) if "symbol" in sub.columns else row.name
+                    rows.append({
+                        "gene":    str(name),
+                        "log2FC":  round(float(row["log2FoldChange"]), 3),
+                        "padj":    float(f"{row['padj']:.2e}"),
+                    })
+                return rows
+
+            top_up   = _top_genes(up,   ascending=False)
+            top_down = _top_genes(down, ascending=True)
+
+            # GO BP 상위 경로
+            def _top_go(direction: str) -> List[Dict]:
+                go_file = pair_dir / f"go_enrichment_{direction}_BP.csv"
+                if not go_file.exists():
+                    return []
+                raw = Path(go_file).read_text().strip()
+                if not raw or raw == '""':
+                    return []
+                try:
+                    gdf = _pd.read_csv(go_file)
+                    if gdf.empty:
+                        return []
+                    gdf = gdf.sort_values("p.adjust").head(5)
+                    return [
+                        {
+                            "term":  row.get("Description", row.get("ID", "")),
+                            "padj":  float(f"{row['p.adjust']:.2e}"),
+                            "count": int(row.get("Count", 0)),
+                        }
+                        for _, row in gdf.iterrows()
+                    ]
+                except Exception:
+                    return []
+
+            top_go_up   = _top_go("up")
+            top_go_down = _top_go("down")
+
+            warnings: List[str] = []
+            if len(sig) == 0:
+                warnings.append("유의미한 DE 유전자 없음 — padj/log2FC 컷오프 재검토 권장")
+            elif len(sig) < 10:
+                warnings.append(f"유의미한 유전자가 {len(sig)}개로 매우 적음")
+
+            results[p] = {
+                "sig_total":      int(len(sig)),
+                "sig_up":         int(len(up)),
+                "sig_down":       int(len(down)),
+                "top_up_genes":   top_up,
+                "top_down_genes": top_down,
+                "top_go_up":      top_go_up,
+                "top_go_down":    top_go_down,
+                "padj_cutoff":    padj_cut,
+                "log2fc_cutoff":  lfc_cut,
+                "warnings":       warnings,
+            }
+
+        # ── 한국어 요약 텍스트 생성 ─────────────────────────────────────────
+        lines = [f"[DE 결과 요약]  (padj < {padj_cut}, |log2FC| > {lfc_cut})"]
+        for p, r in results.items():
+            lines.append(f"\n◆ {p}")
+            lines.append(f"  유의미한 유전자: {r['sig_total']}개  (↑{r['sig_up']} / ↓{r['sig_down']})")
+            if r["top_up_genes"]:
+                top_names = ", ".join(g["gene"] for g in r["top_up_genes"][:5])
+                lines.append(f"  상위 Up-regulated: {top_names}")
+            if r["top_down_genes"]:
+                top_names = ", ".join(g["gene"] for g in r["top_down_genes"][:5])
+                lines.append(f"  상위 Down-regulated: {top_names}")
+            if r["top_go_up"]:
+                go_names = "; ".join(g["term"] for g in r["top_go_up"][:3])
+                lines.append(f"  GO UP (BP): {go_names}")
+            if r["top_go_down"]:
+                go_names = "; ".join(g["term"] for g in r["top_go_down"][:3])
+                lines.append(f"  GO DOWN (BP): {go_names}")
+            for w in r["warnings"]:
+                lines.append(f"  ⚠️  {w}")
+        if not_found:
+            lines.append(f"\n결과 없음 (아직 미실행): {', '.join(not_found)}")
+
+        status = "error" if not results and not_found else (
+            "partial" if not_found else "success"
+        )
+        return {
+            "status":       status,
+            "pairs":        results,
+            "not_found":    not_found,
+            "summary_text": "\n".join(lines),
+        }
+
+    except Exception as e:
+        return {"status": "error", "message": f"read_de_results_summary failed: {e}"}
+
+
+def check_analysis_readiness(de_config_file: str) -> Dict[str, Any]:
+    """
+    DE 분석 실행 전 종합 진단 — 실행 전에 발견할 수 있는 모든 문제를 한 번에 점검.
+
+    점검 항목:
+    1. 파일 존재 여부 (counts CSV, metadata CSV)
+    2. counts ↔ metadata 샘플 ID 일치 여부
+    3. pairwise_comparisons 조건명 ↔ metadata condition 일치 여부
+    4. 조건별 샘플 수 (n < 3 경고)
+    5. counts 기본 통계 (전체 유전자 수, 저발현 유전자 비율)
+
+    Returns:
+        {
+            "status":          "ok" | "warning" | "error",
+            "issues":          [{"level": "error"|"warning", "message": str}, ...],
+            "sample_stats": {
+                "n_samples_metadata": int,
+                "n_samples_counts":   int,
+                "samples_only_in_metadata": [str, ...],
+                "samples_only_in_counts":   [str, ...],
+            },
+            "condition_stats": {condition: {"n": int, "samples": [str]}, ...},
+            "counts_stats": {
+                "n_genes": int,
+                "n_zero_genes": int,
+                "zero_pct": float,
+            },
+            "condition_check": {...},   # validate_de_config_conditions 결과
+            "summary_text": str
+        }
+    """
+    try:
+        import yaml as _yaml
+        import pandas as _pd
+
+        de_cfg_path = Path(de_config_file)
+        if not de_cfg_path.exists():
+            return {"status": "error", "message": f"DE config not found: {de_config_file}"}
+
+        with open(de_cfg_path) as f:
+            de_cfg = _yaml.safe_load(f)
+
+        de_pipeline_dir = de_cfg_path.parent.parent
+        issues: List[Dict[str, str]] = []
+
+        # ── 1. 파일 존재 여부 ────────────────────────────────────────────────
+        def _resolve(raw: str) -> Path:
+            p = Path(raw)
+            return p if p.is_absolute() else de_pipeline_dir / p
+
+        counts_path   = _resolve(de_cfg.get("count_data_path",  ""))
+        metadata_path = _resolve(de_cfg.get("metadata_path",    ""))
+
+        if not counts_path.exists():
+            return {"status": "error",
+                    "message": f"Counts file not found: {counts_path}",
+                    "issues": [{"level": "error", "message": f"counts 파일 없음: {counts_path}"}]}
+        if not metadata_path.exists():
+            return {"status": "error",
+                    "message": f"Metadata file not found: {metadata_path}",
+                    "issues": [{"level": "error", "message": f"metadata 파일 없음: {metadata_path}"}]}
+
+        # ── 2. 데이터 로드 ───────────────────────────────────────────────────
+        counts_df = _pd.read_csv(counts_path, index_col=0)
+        meta_df   = _pd.read_csv(metadata_path)
+
+        counts_samples  = set(counts_df.columns.tolist())
+        cond_col        = "condition" if "condition" in meta_df.columns else "group"
+        meta_samples    = set(meta_df["sample_id"].tolist()) if "sample_id" in meta_df.columns else set()
+
+        # ── 3. 샘플 ID 일치 ──────────────────────────────────────────────────
+        only_meta   = sorted(meta_samples - counts_samples)
+        only_counts = sorted(counts_samples - meta_samples)
+
+        if only_meta:
+            issues.append({"level": "error",
+                           "message": f"metadata에만 있고 counts에 없는 샘플: {only_meta}"})
+        if only_counts:
+            issues.append({"level": "warning",
+                           "message": f"counts에만 있고 metadata에 없는 샘플 (분석에서 제외됨): {only_counts}"})
+
+        # ── 4. 조건명 일치 (validate_de_config_conditions 재사용) ────────────
+        cond_check = validate_de_config_conditions(de_config_file)
+        if cond_check["status"] == "mismatch":
+            for m in cond_check["mismatches"]:
+                suggestion = cond_check["suggestions"].get(m, "?")
+                issues.append({"level": "error",
+                               "message": f"조건명 불일치: config '{m}' → metadata에는 '{suggestion}'"})
+
+        # ── 5. 조건별 샘플 수 ────────────────────────────────────────────────
+        condition_stats: Dict[str, Any] = {}
+        for cond, grp in meta_df.groupby(cond_col):
+            sids = grp["sample_id"].tolist() if "sample_id" in grp.columns else []
+            n    = len(grp)
+            condition_stats[str(cond)] = {"n": n, "samples": sids}
+            if n < 3:
+                issues.append({"level": "warning",
+                               "message": f"'{cond}' 그룹 샘플 수 n={n} (n≥3 권장, 통계적 신뢰도 낮음)"})
+            if n < 2:
+                issues.append({"level": "error",
+                               "message": f"'{cond}' 그룹 샘플 수 n={n} — DESeq2 실행 불가"})
+
+        # ── 6. counts 기본 통계 ──────────────────────────────────────────────
+        n_genes      = len(counts_df)
+        n_zero_genes = int((counts_df.sum(axis=1) == 0).sum())
+        zero_pct     = round(n_zero_genes / n_genes * 100, 1) if n_genes else 0.0
+        if zero_pct > 30:
+            issues.append({"level": "warning",
+                           "message": f"모든 샘플에서 발현량 0인 유전자 {zero_pct}% — 필터링 권장"})
+
+        counts_stats = {
+            "n_genes":      n_genes,
+            "n_zero_genes": n_zero_genes,
+            "zero_pct":     zero_pct,
+        }
+        sample_stats = {
+            "n_samples_metadata":        len(meta_samples),
+            "n_samples_counts":          len(counts_samples),
+            "samples_only_in_metadata":  only_meta,
+            "samples_only_in_counts":    only_counts,
+        }
+
+        # ── 요약 텍스트 ──────────────────────────────────────────────────────
+        errors   = [i for i in issues if i["level"] == "error"]
+        warnings = [i for i in issues if i["level"] == "warning"]
+        status   = "error" if errors else ("warning" if warnings else "ok")
+
+        lines = ["[DE 실행 전 진단]"]
+        lines.append(f"  counts : {counts_path.name}  ({n_genes}개 유전자, {len(counts_samples)}개 샘플)")
+        lines.append(f"  metadata: {metadata_path.name}  ({len(meta_samples)}개 샘플)")
+        lines.append(f"\n조건별 샘플 수:")
+        for cond, s in condition_stats.items():
+            flag = " ⚠️" if s["n"] < 3 else ""
+            lines.append(f"  {cond}: n={s['n']}{flag}")
+        lines.append(f"\ncounts 통계: {n_genes}개 유전자, zero-count {zero_pct}%")
+
+        if not issues:
+            lines.append("\n✅ 이상 없음 — DE 분석 실행 가능")
+        else:
+            if errors:
+                lines.append(f"\n🔴 오류 {len(errors)}개:")
+                for i in errors:
+                    lines.append(f"  - {i['message']}")
+            if warnings:
+                lines.append(f"\n🟡 경고 {len(warnings)}개:")
+                for i in warnings:
+                    lines.append(f"  - {i['message']}")
+
+        return {
+            "status":          status,
+            "issues":          issues,
+            "sample_stats":    sample_stats,
+            "condition_stats": condition_stats,
+            "counts_stats":    counts_stats,
+            "condition_check": cond_check,
+            "summary_text":    "\n".join(lines),
+        }
+
+    except Exception as e:
+        return {"status": "error", "message": f"check_analysis_readiness failed: {e}"}
+
+
+def setup_and_validate(
+    config_file: str,
+    sample_id: Optional[str] = None,
+    n_reads: int = 500_000,
+    cores: int = 8,
+) -> Dict[str, Any]:
+    """
+    Combined pre-flight setup: detect FASTQs, create sample sheet, validate library type.
+
+    Steps:
+    1. Read config to get data_dir, project_id, sample_sheet path
+    2. detect_fastq_files(data_dir)
+    3. create_sample_sheet(project_id, data_dir, output_path=sample_sheet)
+    4. validate_library_type(config_file, sample_id, n_reads, cores)
+
+    Returns:
+        {
+            "status": "success"|"warning"|"error",
+            "fastq_detection": {...},   # detect_fastq_files result
+            "sample_sheet": {...},      # create_sample_sheet result
+            "library_validation": {...},# validate_library_type result
+            "summary": str,             # human-readable summary
+        }
+    """
+    try:
+        cfg_path = Path(config_file)
+        if not cfg_path.exists():
+            return {"status": "error", "message": f"Config not found: {config_file}"}
+
+        import yaml as _yaml
+        with open(cfg_path) as f:
+            cfg = _yaml.safe_load(f)
+
+        data_dir = cfg.get("data_dir", "")
+        project_id = cfg.get("project_id", "")
+        sample_sheet_path = cfg.get("sample_sheet", f"config/samples/{project_id}.tsv")
+
+        # Resolve relative sample_sheet path relative to config file location
+        if not Path(sample_sheet_path).is_absolute():
+            pipeline_root = cfg_path.parent.parent.parent  # config/projects/ → root
+            sample_sheet_path = str(pipeline_root / sample_sheet_path)
+
+        # ── Step 1: Detect FASTQs ────────────────────────────────────────────
+        fq_result = detect_fastq_files(data_dir)
+
+        # ── Step 2: Create sample sheet ──────────────────────────────────────
+        if fq_result.get("status") == "success":
+            ss_result = create_sample_sheet(
+                project_id=project_id,
+                data_dir=data_dir,
+                output_path=sample_sheet_path,
+                overwrite=False,  # preserve manually revised conditions
+            )
+        else:
+            ss_result = {"status": "error", "message": "Skipped — FASTQ detection failed"}
+
+        # ── Step 3: Library validation ───────────────────────────────────────
+        lib_result = validate_library_type(
+            config_file=config_file,
+            n_reads=n_reads,
+            cores=cores,
+            sample_id=sample_id,
+        )
+
+        # ── Build summary ────────────────────────────────────────────────────
+        lines = []
+
+        # FASTQ detection summary
+        if fq_result.get("status") == "success":
+            n_s = fq_result.get("n_samples", 0)
+            n_f = fq_result.get("n_files", 0)
+            lines.append(f"[FASTQ] {n_s}개 샘플, {n_f}개 파일 감지 완료")
+        else:
+            lines.append(f"[FASTQ] 오류: {fq_result.get('message', '알 수 없음')}")
+
+        # Sample sheet summary
+        if ss_result.get("status") == "success":
+            n_ss = ss_result.get("n_samples", 0)
+            conds = ss_result.get("conditions_assigned", {})
+            cond_str = ", ".join(f"{k}: {v}개" for k, v in conds.items())
+            skipped_note = " (기존 파일 유지 — 수동 수정 보존)" if ss_result.get("skipped") else ""
+            lines.append(f"[샘플시트] {n_ss}개 샘플 등록 ({cond_str}){skipped_note}")
+            unassigned = ss_result.get("unassigned", [])
+            if unassigned:
+                lines.append(f"  ⚠ 조건 미지정 샘플: {', '.join(unassigned)}")
+        else:
+            lines.append(f"[샘플시트] 오류: {ss_result.get('message', '알 수 없음')}")
+
+        # Library validation summary
+        if lib_result.get("status") in ("success", "warning"):
+            strand_map = {0: "unstranded (0)", 1: "forward (1)", 2: "reverse (2)"}
+            detected = lib_result.get("strandedness_detected", "?")
+            verdict = lib_result.get("library_type_verdict", "?")
+            exon_pct = lib_result.get("exon_pct", 0)
+            updated = lib_result.get("strandedness_updated", False)
+            before = lib_result.get("strandedness_before", "?")
+            sample_used = lib_result.get("sample_used", "?")
+            lines.append(
+                f"[라이브러리 검증] 샘플: {sample_used}, "
+                f"strandedness: {strand_map.get(detected, detected)}, "
+                f"엑손 비율: {exon_pct:.1f}%, 판정: {verdict}"
+            )
+            if updated:
+                lines.append(
+                    f"  → strandedness config 자동 업데이트: {before} → {detected}"
+                )
+            for w in lib_result.get("warnings", []):
+                lines.append(f"  ⚠ {w}")
+        else:
+            lines.append(f"[라이브러리 검증] 오류: {lib_result.get('message', '알 수 없음')}")
+
+        # Overall status
+        statuses = [fq_result.get("status"), ss_result.get("status"), lib_result.get("status")]
+        if any(s == "error" for s in statuses):
+            overall = "warning"  # partial failure — don't block everything
+        elif any(s == "warning" for s in statuses):
+            overall = "warning"
+        else:
+            overall = "success"
+
+        return {
+            "status": overall,
+            "fastq_detection": fq_result,
+            "sample_sheet": ss_result,
+            "library_validation": lib_result,
+            "summary": "\n".join(lines),
+        }
+
+    except Exception as e:
+        return {"status": "error", "message": f"setup_and_validate failed: {e}"}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DE-GO Pipeline execution tools
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run_de_pipeline(
+    de_config_file: str,
+    de_pipeline_dir: Optional[str] = None,
+    cores: int = 8,
+    dry_run: bool = True,
+    background: bool = False,
+) -> Dict[str, Any]:
+    """
+    Execute the DE-GO Snakemake pipeline.
+
+    Mirrors run_pipeline() but targets the DE pipeline Snakefile.
+    All rules use conda: "rna-seq-de-go-analysis" env, activated via --use-conda.
+
+    Args:
+        de_config_file: Path to DE config YAML (e.g. configs/config_*.yml)
+        de_pipeline_dir: Root of DE pipeline (contains Snakefile). If None,
+                         walks up from de_config_file to find Snakefile.
+        cores: Number of CPU cores
+        dry_run: If True (default), show jobs without running (always blocking)
+        background: If True and not dry_run, launch in background with Popen
+
+    Returns:
+        dry_run:    {"status": "dry_run_ok"|"dry_run_error", "total_jobs": int, ...}
+        background: {"status": "running", "pid": int, "log_file": str, ...}
+        blocking:   {"status": "success"|"error", "returncode": int, ...}
+    """
+    try:
+        de_cfg_path = Path(de_config_file)
+        if not de_cfg_path.exists():
+            return {"status": "error", "message": f"DE config not found: {de_config_file}"}
+
+        # Resolve DE pipeline root (directory containing Snakefile)
+        if de_pipeline_dir:
+            pipeline_root = Path(de_pipeline_dir).resolve()
+        else:
+            # Walk up from config file to find Snakefile
+            pipeline_root = de_cfg_path.resolve().parent
+            for _ in range(5):
+                if (pipeline_root / "Snakefile").exists():
+                    break
+                pipeline_root = pipeline_root.parent
+            else:
+                return {
+                    "status": "error",
+                    "message": f"Could not find Snakefile from {de_config_file}. Provide de_pipeline_dir explicitly."
+                }
+
+        snakefile = pipeline_root / "Snakefile"
+        if not snakefile.exists():
+            return {"status": "error", "message": f"Snakefile not found at {snakefile}"}
+
+        # 4-tier snakemake path resolution (same as run_pipeline)
+        import shutil as _shutil
+        _snakemake_candidates = [
+            Path(sys.executable).parent / "snakemake",
+            Path(os.environ.get("CONDA_PREFIX", "/nonexistent")) / "bin" / "snakemake",
+            Path("/home/ygkim/program/anaconda3/envs/rna-seq-pipeline/bin/snakemake"),
+        ]
+        snakemake_cmd = next(
+            (str(p) for p in _snakemake_candidates if p.exists()),
+            _shutil.which("snakemake") or "snakemake",
+        )
+
+        cmd = [
+            snakemake_cmd,
+            "--snakefile", str(snakefile),
+            "--configfile", str(de_cfg_path.resolve()),
+            "--use-conda",
+            "--cores", str(cores),
+            "--directory", str(pipeline_root),
+        ]
+
+        if dry_run:
+            cmd.append("--dry-run")
+
+        # ── Background launch ───────────────────────────────────────────────
+        if background and not dry_run:
+            log_dir = pipeline_root / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_file = log_dir / f"snakemake_{de_cfg_path.stem}.log"
+            pid_file = log_dir / f"snakemake_{de_cfg_path.stem}.pid"
+
+            with open(log_file, "w") as lf:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=lf,
+                    stderr=subprocess.STDOUT,
+                    cwd=str(pipeline_root),
+                )
+            pid_file.write_text(str(proc.pid))
+
+            return {
+                "status": "running",
+                "pid": proc.pid,
+                "log_file": str(log_file),
+                "pid_file": str(pid_file),
+                "command": " ".join(cmd),
+                "de_config_file": str(de_cfg_path),
+                "de_pipeline_dir": str(pipeline_root),
+                "note": f"DE pipeline launched in background. Use monitor_de_pipeline() to check progress, or: tail -f {log_file}",
+            }
+
+        # ── Blocking (dry-run or background=False) ──────────────────────────
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(pipeline_root))
+        stdout = result.stdout
+        stderr = result.stderr
+        combined = stdout + stderr
+
+        if dry_run:
+            jobs_by_rule: Dict[str, int] = {}
+
+            stats_match = re.search(r'Job stats:\s*\n', combined)
+            if stats_match:
+                block = combined[stats_match.end():]
+                for line in block.splitlines():
+                    if not line.strip() or line.startswith('=') or line.startswith('Building'):
+                        break
+                    if re.match(r'^[-\s]+$', line) or line.lstrip().startswith('job') or line.lstrip().startswith('rule'):
+                        continue
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        try:
+                            jobs_by_rule[parts[0]] = int(parts[-1])
+                        except ValueError:
+                            pass
+
+            if not jobs_by_rule:
+                counts_match = re.search(r'Job counts:\s*\ncount\s+jobs\s*\n([\s\S]+?)(?=\n\S|\Z)', combined)
+                if counts_match:
+                    for line in counts_match.group(1).strip().splitlines():
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            try:
+                                jobs_by_rule[parts[1]] = int(parts[0])
+                            except ValueError:
+                                pass
+
+            total_jobs = sum(jobs_by_rule.values())
+            issues = [
+                ln.strip() for ln in combined.splitlines()
+                if any(kw in ln.lower() for kw in ('error:', 'exception', 'traceback', 'syntaxerror'))
+                and 'missing' not in ln.lower()
+            ][:20]
+
+            status = "dry_run_ok" if result.returncode == 0 else "dry_run_error"
+            result_dict: Dict[str, Any] = {
+                "status": status,
+                "returncode": result.returncode,
+                "dry_run": True,
+                "total_jobs": total_jobs,
+                "jobs_by_rule": jobs_by_rule,
+                "issues": issues,
+                "de_config_file": str(de_cfg_path),
+                "de_pipeline_dir": str(pipeline_root),
+                "command": " ".join(cmd),
+                "note": (
+                    "dry_run_ok: Jobs listed above will run. Call run_de_pipeline(dry_run=False, background=True) to execute."
+                    if status == "dry_run_ok" else
+                    "dry_run_error: Configuration error. Check issues[] and stderr_snippet."
+                ),
+            }
+            if result.returncode != 0 or not jobs_by_rule:
+                result_dict["stderr_snippet"] = (stderr or stdout)[:3000]
+            return result_dict
+
+        else:
+            output_lines = combined.splitlines()
+            return {
+                "status": "success" if result.returncode == 0 else "error",
+                "returncode": result.returncode,
+                "dry_run": False,
+                "output_tail": "\n".join(output_lines[-50:]),
+                "command": " ".join(cmd),
+                "de_config_file": str(de_cfg_path),
+                "de_pipeline_dir": str(pipeline_root),
+            }
+
+    except Exception as e:
+        return {"status": "error", "message": f"run_de_pipeline failed: {e}"}
+
+
+def monitor_de_pipeline(
+    de_config_file: Optional[str] = None,
+    de_pipeline_dir: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Check DE-GO pipeline execution status by parsing Snakemake logs.
+
+    Simpler than monitor_pipeline() — no STAR logs to parse.
+
+    Returns:
+        {
+            "status": "not_started"|"running"|"completed"|"failed",
+            "progress_pct": float | None,
+            "jobs_done": int | None,
+            "jobs_total": int | None,
+            "current_rule": str | None,
+            "error_rules": [...],
+            "log_file": str | None,
+            "pid": int | None,
+            "last_lines": str,
+        }
+    """
+    try:
+        # Resolve pipeline root
+        pipeline_root: Optional[Path] = None
+        if de_pipeline_dir:
+            pipeline_root = Path(de_pipeline_dir).resolve()
+        elif de_config_file:
+            p = Path(de_config_file).resolve().parent
+            for _ in range(5):
+                if (p / "Snakefile").exists():
+                    pipeline_root = p
+                    break
+                p = p.parent
+
+        # Find log file
+        log_path = _find_snakemake_log(de_config_file, pipeline_root)
+
+        if log_path is None:
+            return {
+                "status": "not_started",
+                "progress_pct": None,
+                "jobs_done": None,
+                "jobs_total": None,
+                "current_rule": None,
+                "error_rules": [],
+                "log_file": None,
+                "pid": None,
+                "last_lines": "",
+                "message": "No log file found. Has run_de_pipeline() been called yet?",
+            }
+
+        log_info = _parse_snakemake_log(log_path)
+
+        # Check PID file to determine if process is still alive
+        pid: Optional[int] = None
+        is_running = False
+        if de_config_file and pipeline_root:
+            pid_file = pipeline_root / "logs" / f"snakemake_{Path(de_config_file).stem}.pid"
+            if pid_file.exists():
+                try:
+                    pid = int(pid_file.read_text().strip())
+                    os.kill(pid, 0)   # signal 0: just probe, no actual signal
+                    is_running = True
+                except (ValueError, ProcessLookupError, PermissionError):
+                    is_running = False
+
+        # Determine status
+        if log_info.get("fatal_error") or log_info.get("error_rules"):
+            status = "failed"
+        elif log_info.get("is_complete"):
+            status = "completed"
+        elif is_running:
+            status = "running"
+        else:
+            # Process gone but no completion signal → likely failed or interrupted
+            status = "failed" if not log_info.get("is_complete") else "completed"
+
+        # Last 20 lines of log for context
+        try:
+            log_lines = log_path.read_text(errors='ignore').splitlines()
+            last_lines = "\n".join(log_lines[-20:])
+        except OSError:
+            last_lines = ""
+
+        return {
+            "status": status,
+            "progress_pct": log_info.get("progress_pct"),
+            "jobs_done": log_info.get("jobs_done"),
+            "jobs_total": log_info.get("jobs_total"),
+            "current_rule": log_info.get("current_rule"),
+            "error_rules": log_info.get("error_rules", []),
+            "log_file": str(log_path),
+            "pid": pid,
+            "last_lines": last_lines,
+        }
+
+    except Exception as e:
+        return {"status": "error", "message": f"monitor_de_pipeline failed: {e}"}

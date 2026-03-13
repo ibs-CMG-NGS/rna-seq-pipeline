@@ -49,3 +49,4 @@ benchmarks/
 # genome/*.fa.fai
 workflow.pdf
 __pycache__/
+.agent_session.json

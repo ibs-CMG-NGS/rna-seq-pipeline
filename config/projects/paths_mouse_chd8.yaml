@@ -1,20 +1,14 @@
 # Bridge Script Path Configuration
+# Auto-generated configuration
+# Generated: 2026-02-26 06:21:09
+# Source: /data_3tb/shared/output/mouse-chd8/project_summary.json
 # Used by: scripts/bridge_to_de_pipeline.py
+#
 # Project: mouse-chd8
 
 project_id: mouse-chd8
-
-# RNA-seq pipeline output directory
 rnaseq_output: /data_3tb/shared/output/mouse-chd8
-
-# DE/GO analysis pipeline directory
 de_pipeline: /home/ygkim/ngs-pipeline/RNA-Seq_DE_GO_analysis
-
-# Sample sheet directory
-sample_sheet_dir: /data_3tb/shared/rna-seq-pipeline/config/samples
-
-# Counts matrix relative path (relative to rnaseq_output)
 counts_relpath: project_summary/counts/counts_matrix_clean.csv
-
-# Project summary relative path (relative to rnaseq_output)
 summary_relpath: project_summary.json
+sample_sheet_dir: /data_3tb/shared/rna-seq-pipeline/config/samples

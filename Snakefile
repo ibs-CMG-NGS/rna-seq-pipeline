@@ -213,29 +213,45 @@ else:
     import glob
 
     for pattern in FASTQ_PATTERNS:
+        # 1단계: flat 검색 (최상위 폴더)
         files = glob.glob(f"{RAW_DATA_DIR}/{pattern}")
+
+        # 2단계: flat에서 없으면 하위 폴더까지 재귀 검색
+        if not files:
+            files = glob.glob(f"{RAW_DATA_DIR}/**/{pattern}", recursive=True)
+            if files:
+                print(f"  [INFO] FASTQ files found in subdirectories of {RAW_DATA_DIR}")
+                print(f"  [RECOMMEND] Use sample_sheet mode for subdirectory layouts:")
+                print(f"    use_sample_sheet: true  (in project config)")
+                print(f"    Run: agent → '샘플 시트 만들어줘' to auto-generate TSV with absolute paths")
+
         if files:
             # 첫 번째 매칭되는 패턴 사용
+            # 하위 폴더 포함 여부에 따라 glob_wildcards 패턴 분기
+            _has_subdir = any(os.sep in os.path.relpath(f, RAW_DATA_DIR) for f in files
+                              if os.sep in os.path.relpath(f, RAW_DATA_DIR))
+            _wc_prefix = f"{RAW_DATA_DIR}/**/" if _has_subdir else f"{RAW_DATA_DIR}/"
+
             if "_1.fastq.gz" in pattern:
-                SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}_1.fastq.gz")
+                SAMPLES, = glob_wildcards(f"{_wc_prefix}{{sample}}_1.fastq.gz")
             elif "_R1.fastq.gz" in pattern:
-                SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}_R1.fastq.gz")
+                SAMPLES, = glob_wildcards(f"{_wc_prefix}{{sample}}_R1.fastq.gz")
             elif "_R1_001.fastq.gz" in pattern:
-                SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}_R1_001.fastq.gz")
+                SAMPLES, = glob_wildcards(f"{_wc_prefix}{{sample}}_R1_001.fastq.gz")
             elif ".1.fastq.gz" in pattern:
-                SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}.1.fastq.gz")
+                SAMPLES, = glob_wildcards(f"{_wc_prefix}{{sample}}.1.fastq.gz")
             elif "_1.fq.gz" in pattern:
-                SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}_1.fq.gz")
+                SAMPLES, = glob_wildcards(f"{_wc_prefix}{{sample}}_1.fq.gz")
             elif "_R1.fq.gz" in pattern:
-                SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}_R1.fq.gz")
+                SAMPLES, = glob_wildcards(f"{_wc_prefix}{{sample}}_R1.fq.gz")
             elif "_1.fastq" in pattern:
-                SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}_1.fastq")
+                SAMPLES, = glob_wildcards(f"{_wc_prefix}{{sample}}_1.fastq")
             elif "_R1.fastq" in pattern:
-                SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}_R1.fastq")
+                SAMPLES, = glob_wildcards(f"{_wc_prefix}{{sample}}_R1.fastq")
             elif "_1.fq" in pattern:
-                SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}_1.fq")
+                SAMPLES, = glob_wildcards(f"{_wc_prefix}{{sample}}_1.fq")
             elif "_R1.fq" in pattern:
-                SAMPLES, = glob_wildcards(f"{RAW_DATA_DIR}/{{sample}}_R1.fq")
+                SAMPLES, = glob_wildcards(f"{_wc_prefix}{{sample}}_R1.fq")
 
             # 사용된 패턴 저장 + 압축 여부
             DETECTED_PATTERN = pattern.replace("*", "{sample}")
@@ -332,7 +348,15 @@ def get_all_targets():
         
         if config.get("generate_multiqc", True):
             targets.append(f"{RESULTS_DIR}/multiqc_report.html")
-        
+
+        if config.get("generate_qc_report", True):
+            targets.append(f"{RESULTS_DIR}/{config.get('qc_report_filename', 'qc_report.html')}")
+
+        targets.append(f"{RESULTS_DIR}/pipeline_qc_evaluation.txt")
+
+        if config.get('fastqc_evaluation', {}).get('enabled', True):
+            targets.append(f"{QC_DIR}/{config.get('fastqc_evaluation', {}).get('evaluation_report', 'fastqc_evaluation.txt')}")
+
         return targets
     else:
         # Legacy 구조
@@ -379,7 +403,12 @@ rule fastqc_raw:
         f"{LOGS_DIR}/fastqc/{{sample}}_{{read}}_raw.log"
     threads: config.get("fastqc_threads", 2)
     shell:
-        f"fastqc {{input}} -o {QC_DIR}/ > {{log}} 2>&1"
+        f"""
+        fastqc {{input}} -o {QC_DIR}/ > {{log}} 2>&1
+        stem=$(basename {{input}} .fastq.gz); stem=$(basename $stem .fastq); stem=$(basename $stem .fq.gz); stem=$(basename $stem .fq)
+        [ "{QC_DIR}/${{{{stem}}}}_fastqc.html" != "{{output.html}}" ] && mv {QC_DIR}/${{{{stem}}}}_fastqc.html {{output.html}} || true
+        [ "{QC_DIR}/${{{{stem}}}}_fastqc.zip"  != "{{output.zip}}"  ] && mv {QC_DIR}/${{{{stem}}}}_fastqc.zip  {{output.zip}}  || true
+        """
 
 
 # --- 3-1. FastQC 결과 자동 평가 (Raw 데이터) ---
@@ -394,13 +423,22 @@ rule evaluate_fastqc_raw:
         config_params=config.get('fastqc_evaluation', {})
     log:
         f"{LOGS_DIR}/fastqc/evaluate_raw.log"
-    shell:
-        """
-        python3 src/qc/evaluate_fastqc.py \
-            {params.qc_dir} \
-            -o {output.report} \
-            --json {output.json} > {log} 2>&1
-        """
+    run:
+        import json, tempfile, os
+        config_file = tempfile.NamedTemporaryFile(
+            mode='w', suffix='.json', delete=False
+        )
+        json.dump(params.config_params, config_file)
+        config_file.close()
+        shell(
+            f"python3 src/qc/evaluate_fastqc.py "
+            f"{params.qc_dir} "
+            f"-o {{output.report}} "
+            f"--json {{output.json}} "
+            f"--config {config_file.name} "
+            f"> {{log}} 2>&1"
+        )
+        os.unlink(config_file.name)
 
 
 # --- 4. 어댑터 제거 (cutadapt) 규칙 ---
@@ -524,18 +562,43 @@ rule generate_qc_report:
         counts=f"{COUNTS_DIR}/counts_matrix.txt",
         counts_summary=f"{COUNTS_DIR}/counts_matrix.txt.summary",
         cutadapt_logs=expand(f"{LOGS_DIR}/cutadapt/{{sample}}.log", sample=SAMPLES),
-        star_logs=expand(f"{ALIGNED_DIR}/{{sample}}/Log.final.out", sample=SAMPLES)
+        star_logs=expand(f"{ALIGNED_DIR}/{{sample}}/Log.final.out", sample=SAMPLES),
+        pipeline_qc_json=f"{RESULTS_DIR}/pipeline_qc_evaluation.json"
     output:
         f"{RESULTS_DIR}/{config.get('qc_report_filename', 'qc_report.html')}"
     params:
         top_genes=config.get("qc_top_genes", 10),
         logs_dir=LOGS_DIR,
         results_dir=RESULTS_DIR,
-        data_dir=DATA_DIR
+        data_dir=DATA_DIR,
+        trimmed_dir=TRIMMED_DIR,
+        aligned_dir=ALIGNED_DIR,
+        counts_dir=COUNTS_DIR,
+        raw_files={s: {"r1": SAMPLE_METADATA[s].get("fastq_1", ""), "r2": SAMPLE_METADATA[s].get("fastq_2", "")} for s in SAMPLES} if SAMPLE_METADATA else {}
     log:
         f"{LOGS_DIR}/qc_report.log"
     script:
         "src/qc/generate_qc_report.py"
+
+
+# --- 8-1. 파이프라인 종합 QC 평가 ---
+rule evaluate_pipeline_qc:
+    input:
+        counts_summary=f"{COUNTS_DIR}/counts_matrix.txt.summary",
+        cutadapt_logs=expand(f"{LOGS_DIR}/cutadapt/{{sample}}.log", sample=SAMPLES),
+        star_logs=expand(f"{ALIGNED_DIR}/{{sample}}/Log.final.out", sample=SAMPLES)
+    output:
+        report=f"{RESULTS_DIR}/pipeline_qc_evaluation.txt",
+        json=f"{RESULTS_DIR}/pipeline_qc_evaluation.json"
+    params:
+        samples=SAMPLES,
+        logs_dir=LOGS_DIR,
+        aligned_dir=ALIGNED_DIR,
+        qc_thresholds=config.get("qc_thresholds", {})
+    log:
+        f"{LOGS_DIR}/pipeline_qc_evaluation.log"
+    script:
+        "src/qc/evaluate_pipeline_qc.py"
 
 
 # ========================================================================
